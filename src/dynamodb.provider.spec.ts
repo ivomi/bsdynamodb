@@ -1,3 +1,4 @@
+import { HttpException } from '@nestjs/common';
 import type { Db } from 'mongodb';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfigService } from './config.service.js';
@@ -23,9 +24,16 @@ function makeCollectionMock(findOneResult: Record<string, unknown> | null, findD
 function makeProvider(collectionMock: ReturnType<typeof makeCollectionMock>): DynamodbProvider {
   const config = new ConfigService();
   const provider = new DynamodbProvider(config);
-  const db = { collection: vi.fn().mockReturnValue(collectionMock) } as unknown as Db;
+  const db = {
+    collection: vi.fn().mockReturnValue(collectionMock),
+    createCollection: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Db;
   (provider as unknown as Record<string, unknown>)['db'] = db;
   return provider;
+}
+
+function getDb(provider: DynamodbProvider): Db {
+  return (provider as unknown as Record<string, unknown>)['db'] as Db;
 }
 
 const minimalInput: Record<string, unknown> = {
@@ -134,6 +142,11 @@ describe('DynamodbProvider.createTable', () => {
     expect(result.TableDescription['TableSizeBytes']).toBe(0);
     expect(result.TableDescription['ItemCount']).toBe(0);
   });
+
+  it('creates a collection named after the table', async () => {
+    await provider.createTable({ ...minimalInput });
+    expect(vi.mocked(getDb(provider).createCollection)).toHaveBeenCalledWith('MyTable');
+  });
 });
 
 describe('DynamodbProvider.listTables', () => {
@@ -206,5 +219,49 @@ describe('DynamodbProvider.listTables', () => {
     const provider = makeProvider(col);
     const result = await provider.listTables({});
     expect(result.TableNames).toEqual([]);
+  });
+});
+
+describe('DynamodbProvider.describeTable', () => {
+  it('returns the raw _tables document under Table key', async () => {
+    const doc = { name: 'MyTable', tableStatus: 'ACTIVE', tableArn: 'arn:aws:...' };
+    const col = makeCollectionMock(doc);
+    const provider = makeProvider(col);
+    const result = await provider.describeTable({ TableName: 'MyTable' });
+    expect(result.Table).toBe(doc);
+  });
+
+  it('queries _tables by table name', async () => {
+    const col = makeCollectionMock({ name: 'MyTable' });
+    const provider = makeProvider(col);
+    await provider.describeTable({ TableName: 'MyTable' });
+    expect(col.findOne).toHaveBeenCalledWith({ name: 'MyTable' });
+  });
+
+  it('throws ResourceNotFoundException when table does not exist', async () => {
+    const col = makeCollectionMock(null);
+    const provider = makeProvider(col);
+    let caught: HttpException | undefined;
+    try {
+      await provider.describeTable({ TableName: 'Missing' });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    const response = caught!.getResponse() as Record<string, unknown>;
+    expect(response['__type']).toBe('ResourceNotFoundException');
+    expect(response['message']).toContain('Missing');
+  });
+
+  it('throws ValidationException for missing TableName', async () => {
+    const col = makeCollectionMock(null);
+    const provider = makeProvider(col);
+    let caught: HttpException | undefined;
+    try {
+      await provider.describeTable({});
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    const response = caught!.getResponse() as Record<string, unknown>;
+    expect(response['__type']).toBe('ValidationException');
   });
 });

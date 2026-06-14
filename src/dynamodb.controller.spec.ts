@@ -7,6 +7,7 @@ function makeProvider(): DynamodbProvider {
   return {
     createTable: vi.fn().mockResolvedValue({ TableDescription: { TableName: 'Test' } }),
     listTables: vi.fn().mockResolvedValue({ TableNames: ['A', 'B'] }),
+    describeTable: vi.fn().mockResolvedValue({ Table: { name: 'Test' } }),
   } as unknown as DynamodbProvider;
 }
 
@@ -79,5 +80,20 @@ describe('DynamodbController', () => {
     await controller.handle('DynamoDB_20120810.Unknown', {}).catch(() => {});
     expect(provider.createTable).not.toHaveBeenCalled();
     expect(provider.listTables).not.toHaveBeenCalled();
+  });
+
+  it('routes DescribeTable target to provider.describeTable', async () => {
+    const provider = makeProvider();
+    const controller = new DynamodbController(provider);
+    const body = { TableName: 'Test' };
+    await controller.handle('DynamoDB_20120810.DescribeTable', body);
+    expect(provider.describeTable).toHaveBeenCalledWith(body);
+  });
+
+  it('returns the result of provider.describeTable', async () => {
+    const provider = makeProvider();
+    const controller = new DynamodbController(provider);
+    const result = await controller.handle('DynamoDB_20120810.DescribeTable', { TableName: 'Test' });
+    expect(result).toEqual({ Table: { name: 'Test' } });
   });
 });

@@ -12,6 +12,8 @@ export class DynamodbController {
         return this.dynamodbProvider.createTable(body);
       case 'DynamoDB_20120810.ListTables':
         return this.dynamodbProvider.listTables(body);
+      case 'DynamoDB_20120810.DescribeTable':
+        return this.dynamodbProvider.describeTable(body);
       default:
         throw new HttpException(
           { __type: 'UnknownOperationException', message: `Unknown operation: ${target}` },

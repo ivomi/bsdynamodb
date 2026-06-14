@@ -1,11 +1,12 @@
 import type { OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { Injectable } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { Db, MongoClient } from 'mongodb';
 import { ConfigService } from './config.service.js';
 import type { CreateTableInput } from './dynamodb.types.js';
-import { validateCreateTable } from './validation/create-table.js';
-import { parseListTables } from './validation/list-tables.js';
+import { validateCreateTable } from './validation-request/create-table.js';
+import { validateDescribeTable } from './validation-request/describe-table.js';
+import { parseListTables } from './validation-request/list-tables.js';
 
 @Injectable()
 export class DynamodbProvider implements OnModuleInit, OnModuleDestroy {
@@ -53,6 +54,7 @@ export class DynamodbProvider implements OnModuleInit, OnModuleDestroy {
     };
 
     await this.db.collection('_tables').insertOne(tableDoc);
+    await this.db.createCollection(tableName);
 
     const description: Record<string, unknown> = {
       TableName: tableName,
@@ -110,5 +112,17 @@ export class DynamodbProvider implements OnModuleInit, OnModuleDestroy {
       TableNames: tableNames,
       ...(hasMore ? { LastEvaluatedTableName: tableNames[tableNames.length - 1] } : {}),
     };
+  }
+
+  async describeTable(body: Record<string, unknown>) {
+    const tableName = validateDescribeTable(body);
+    const doc = await this.db.collection('_tables').findOne({ name: tableName });
+    if (doc == null) {
+      throw new HttpException(
+        { __type: 'ResourceNotFoundException', message: `Table not found: ${tableName}` },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return { Table: doc };
   }
 }
