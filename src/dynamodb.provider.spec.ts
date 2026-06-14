@@ -222,6 +222,257 @@ describe('DynamodbProvider.listTables', () => {
   });
 });
 
+function makeItemCollectionMock(opts: {
+  findOneResult?: Record<string, unknown> | null;
+  replaceOneResult?: unknown;
+  deleteOneResult?: unknown;
+  updateOneResult?: unknown;
+}) {
+  return {
+    findOne: vi.fn().mockResolvedValue(opts.findOneResult ?? null),
+    replaceOne: vi.fn().mockResolvedValue(opts.replaceOneResult ?? { modifiedCount: 1 }),
+    deleteOne: vi.fn().mockResolvedValue(opts.deleteOneResult ?? { deletedCount: 1 }),
+    updateOne: vi.fn().mockResolvedValue(opts.updateOneResult ?? { modifiedCount: 1 }),
+  };
+}
+
+function makeProviderWithItemCollections(
+  tableDoc: Record<string, unknown> | null,
+  itemColMock: ReturnType<typeof makeItemCollectionMock>,
+): DynamodbProvider {
+  const config = new ConfigService();
+  const provider = new DynamodbProvider(config);
+  const tablesCol = {
+    findOne: vi.fn().mockResolvedValue(tableDoc),
+    insertOne: vi.fn().mockResolvedValue({}),
+    find: vi.fn().mockReturnValue(makeCursorMock([])),
+  };
+  const db = {
+    collection: vi.fn().mockImplementation((name: string) =>
+      name === '_tables' ? tablesCol : itemColMock,
+    ),
+    createCollection: vi.fn().mockResolvedValue(undefined),
+    dropCollection: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Db;
+  (provider as unknown as Record<string, unknown>)['db'] = db;
+  return provider;
+}
+
+const tableDoc = {
+  name: 'MyTable',
+  keySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+  attributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }],
+  tableStatus: 'ACTIVE',
+  tableArn: 'arn:aws:dynamodb:us-east-1:000000000000:table/MyTable',
+  tableId: 'table-id-1',
+  billingMode: 'PROVISIONED',
+};
+
+describe('DynamodbProvider.putItem', () => {
+  const item = { pk: { S: 'user-1' }, name: { S: 'Alice' } };
+
+  it('calls replaceOne with upsert on the table collection', async () => {
+    const itemCol = makeItemCollectionMock({});
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    await provider.putItem({ TableName: 'MyTable', Item: item });
+    expect(itemCol.replaceOne).toHaveBeenCalledOnce();
+    const [filter, doc, opts] = vi.mocked(itemCol.replaceOne).mock.calls[0]!;
+    expect(filter).toMatchObject({ pk: 'user-1' });
+    expect(doc).toEqual({ pk: 'user-1', name: 'Alice' });
+    expect(opts).toEqual({ upsert: true });
+  });
+
+  it('returns empty object by default', async () => {
+    const itemCol = makeItemCollectionMock({});
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    const result = await provider.putItem({ TableName: 'MyTable', Item: item });
+    expect(result).toEqual({});
+  });
+
+  it('returns Attributes with old item when ReturnValues is ALL_OLD and item existed', async () => {
+    const existing = { pk: 'user-1', name: 'OldName', _id: 'mongo-id' };
+    const itemCol = makeItemCollectionMock({ findOneResult: existing });
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    const result = await provider.putItem({ TableName: 'MyTable', Item: item, ReturnValues: 'ALL_OLD' });
+    expect(result).toHaveProperty('Attributes');
+    const attrs = (result as Record<string, unknown>)['Attributes'] as Record<string, unknown>;
+    expect(attrs['pk']).toEqual({ S: 'user-1' });
+    expect(attrs['_id']).toBeUndefined();
+  });
+
+  it('returns empty object when ReturnValues is ALL_OLD but no existing item', async () => {
+    const itemCol = makeItemCollectionMock({ findOneResult: null });
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    const result = await provider.putItem({ TableName: 'MyTable', Item: item, ReturnValues: 'ALL_OLD' });
+    expect(result).toEqual({});
+  });
+
+  it('throws ResourceNotFoundException when table does not exist', async () => {
+    const itemCol = makeItemCollectionMock({});
+    const provider = makeProviderWithItemCollections(null, itemCol);
+    let caught: HttpException | undefined;
+    try {
+      await provider.putItem({ TableName: 'Missing', Item: item });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    expect((caught!.getResponse() as Record<string, unknown>)['__type']).toBe('ResourceNotFoundException');
+  });
+});
+
+describe('DynamodbProvider.deleteItem', () => {
+  const key = { pk: { S: 'user-1' } };
+
+  it('calls deleteOne with the key filter on the table collection', async () => {
+    const itemCol = makeItemCollectionMock({});
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    await provider.deleteItem({ TableName: 'MyTable', Key: key });
+    expect(itemCol.deleteOne).toHaveBeenCalledOnce();
+    const [filter] = vi.mocked(itemCol.deleteOne).mock.calls[0]!;
+    expect(filter).toMatchObject({ pk: 'user-1' });
+  });
+
+  it('returns empty object by default', async () => {
+    const itemCol = makeItemCollectionMock({});
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    const result = await provider.deleteItem({ TableName: 'MyTable', Key: key });
+    expect(result).toEqual({});
+  });
+
+  it('returns Attributes with deleted item when ReturnValues is ALL_OLD', async () => {
+    const existing = { pk: 'user-1', name: 'Alice', _id: 'mongo-id' };
+    const itemCol = makeItemCollectionMock({ findOneResult: existing });
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    const result = await provider.deleteItem({ TableName: 'MyTable', Key: key, ReturnValues: 'ALL_OLD' });
+    const attrs = (result as Record<string, unknown>)['Attributes'] as Record<string, unknown>;
+    expect(attrs['pk']).toEqual({ S: 'user-1' });
+    expect(attrs['_id']).toBeUndefined();
+  });
+
+  it('throws ResourceNotFoundException when table does not exist', async () => {
+    const itemCol = makeItemCollectionMock({});
+    const provider = makeProviderWithItemCollections(null, itemCol);
+    let caught: HttpException | undefined;
+    try {
+      await provider.deleteItem({ TableName: 'Missing', Key: key });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    expect((caught!.getResponse() as Record<string, unknown>)['__type']).toBe('ResourceNotFoundException');
+  });
+});
+
+describe('DynamodbProvider.updateItem', () => {
+  const key = { pk: { S: 'user-1' } };
+  const existingItem = { pk: 'user-1', name: 'OldName' };
+
+  it('calls updateOne with $set from AttributeUpdates PUT action', async () => {
+    const itemCol = makeItemCollectionMock({ findOneResult: existingItem });
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    await provider.updateItem({
+      TableName: 'MyTable',
+      Key: key,
+      AttributeUpdates: { name: { Value: { S: 'NewName' }, Action: 'PUT' } },
+    });
+    expect(itemCol.updateOne).toHaveBeenCalledOnce();
+    const [, update] = vi.mocked(itemCol.updateOne).mock.calls[0]!;
+    expect((update as Record<string, unknown>)['$set']).toEqual({ name: 'NewName' });
+  });
+
+  it('calls updateOne with $unset from AttributeUpdates DELETE action', async () => {
+    const itemCol = makeItemCollectionMock({ findOneResult: existingItem });
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    await provider.updateItem({
+      TableName: 'MyTable',
+      Key: key,
+      AttributeUpdates: { name: { Action: 'DELETE' } },
+    });
+    const [, update] = vi.mocked(itemCol.updateOne).mock.calls[0]!;
+    expect((update as Record<string, unknown>)['$unset']).toMatchObject({ name: '' });
+  });
+
+  it('applies SET clause from UpdateExpression', async () => {
+    const itemCol = makeItemCollectionMock({ findOneResult: existingItem });
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    await provider.updateItem({
+      TableName: 'MyTable',
+      Key: key,
+      UpdateExpression: 'SET name = :n',
+      ExpressionAttributeValues: { ':n': { S: 'NewName' } },
+    });
+    const [, update] = vi.mocked(itemCol.updateOne).mock.calls[0]!;
+    expect((update as Record<string, unknown>)['$set']).toEqual({ name: 'NewName' });
+  });
+
+  it('applies REMOVE clause from UpdateExpression', async () => {
+    const itemCol = makeItemCollectionMock({ findOneResult: existingItem });
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    await provider.updateItem({
+      TableName: 'MyTable',
+      Key: key,
+      UpdateExpression: 'REMOVE name',
+    });
+    const [, update] = vi.mocked(itemCol.updateOne).mock.calls[0]!;
+    expect((update as Record<string, unknown>)['$unset']).toMatchObject({ name: '' });
+  });
+
+  it('returns empty object by default (ReturnValues NONE)', async () => {
+    const itemCol = makeItemCollectionMock({ findOneResult: existingItem });
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    const result = await provider.updateItem({
+      TableName: 'MyTable',
+      Key: key,
+      AttributeUpdates: { name: { Value: { S: 'New' }, Action: 'PUT' } },
+    });
+    expect(result).toEqual({});
+  });
+
+  it('returns old Attributes marshalled to DynamoDB format when ReturnValues is ALL_OLD', async () => {
+    const itemCol = makeItemCollectionMock({ findOneResult: existingItem });
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    const result = await provider.updateItem({
+      TableName: 'MyTable',
+      Key: key,
+      AttributeUpdates: { name: { Value: { S: 'New' }, Action: 'PUT' } },
+      ReturnValues: 'ALL_OLD',
+    });
+    const attrs = (result as Record<string, unknown>)['Attributes'] as Record<string, unknown>;
+    expect(attrs['name']).toEqual({ S: 'OldName' });
+  });
+
+  it('throws ResourceNotFoundException when table does not exist', async () => {
+    const itemCol = makeItemCollectionMock({ findOneResult: existingItem });
+    const provider = makeProviderWithItemCollections(null, itemCol);
+    let caught: HttpException | undefined;
+    try {
+      await provider.updateItem({
+        TableName: 'Missing',
+        Key: key,
+        AttributeUpdates: { name: { Value: { S: 'x' }, Action: 'PUT' } },
+      });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    expect((caught!.getResponse() as Record<string, unknown>)['__type']).toBe('ResourceNotFoundException');
+  });
+
+  it('throws ResourceNotFoundException when item does not exist', async () => {
+    const itemCol = makeItemCollectionMock({ findOneResult: null });
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    let caught: HttpException | undefined;
+    try {
+      await provider.updateItem({
+        TableName: 'MyTable',
+        Key: key,
+        AttributeUpdates: { name: { Value: { S: 'x' }, Action: 'PUT' } },
+      });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    expect((caught!.getResponse() as Record<string, unknown>)['__type']).toBe('ResourceNotFoundException');
+  });
+});
+
 describe('DynamodbProvider.describeTable', () => {
   it('returns the raw _tables document under Table key', async () => {
     const doc = { name: 'MyTable', tableStatus: 'ACTIVE', tableArn: 'arn:aws:...' };

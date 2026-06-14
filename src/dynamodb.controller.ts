@@ -10,10 +10,20 @@ export class DynamodbController {
     switch (target) {
       case 'DynamoDB_20120810.CreateTable':
         return this.dynamodbProvider.createTable(body);
-      case 'DynamoDB_20120810.ListTables':
-        return this.dynamodbProvider.listTables(body);
       case 'DynamoDB_20120810.DescribeTable':
         return this.dynamodbProvider.describeTable(body);
+      case 'DynamoDB_20120810.ListTables':
+        return this.dynamodbProvider.listTables(body);
+      case 'DynamoDB_20120810.DeleteTable':
+        return this.dynamodbProvider.deleteTable(body);
+      case 'DynamoDB_20120810.UpdateTable':
+        return this.dynamodbProvider.updateTable(body);
+      case 'DynamoDB_20120810.PutItem':
+        return this.dynamodbProvider.putItem(body);
+      case 'DynamoDB_20120810.UpdateItem':
+        return this.dynamodbProvider.updateItem(body);
+      case 'DynamoDB_20120810.DeleteItem':
+        return this.dynamodbProvider.deleteItem(body);
       default:
         throw new HttpException(
           { __type: 'UnknownOperationException', message: `Unknown operation: ${target}` },

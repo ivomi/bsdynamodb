@@ -8,6 +8,11 @@ function makeProvider(): DynamodbProvider {
     createTable: vi.fn().mockResolvedValue({ TableDescription: { TableName: 'Test' } }),
     listTables: vi.fn().mockResolvedValue({ TableNames: ['A', 'B'] }),
     describeTable: vi.fn().mockResolvedValue({ Table: { name: 'Test' } }),
+    updateTable: vi.fn().mockResolvedValue({ TableDescription: { TableName: 'Test' } }),
+    deleteTable: vi.fn().mockResolvedValue({ TableDescription: { TableName: 'Test' } }),
+    putItem: vi.fn().mockResolvedValue({}),
+    updateItem: vi.fn().mockResolvedValue({}),
+    deleteItem: vi.fn().mockResolvedValue({}),
   } as unknown as DynamodbProvider;
 }
 
@@ -53,7 +58,7 @@ describe('DynamodbController', () => {
     const controller = new DynamodbController(provider);
     let caught: HttpException | undefined;
     try {
-      await controller.handle('DynamoDB_20120810.DeleteTable', {});
+      await controller.handle('DynamoDB_20120810.Unknown', {});
     } catch (e) {
       caught = e as HttpException;
     }
@@ -65,13 +70,73 @@ describe('DynamodbController', () => {
     const controller = new DynamodbController(provider);
     let caught: HttpException | undefined;
     try {
-      await controller.handle('DynamoDB_20120810.DeleteTable', {});
+      await controller.handle('DynamoDB_20120810.Unknown', {});
     } catch (e) {
       caught = e as HttpException;
     }
     const response = caught!.getResponse() as Record<string, unknown>;
     expect(response['__type']).toBe('UnknownOperationException');
-    expect(response['message']).toContain('DynamoDB_20120810.DeleteTable');
+    expect(response['message']).toContain('DynamoDB_20120810.Unknown');
+  });
+
+  it('routes DeleteTable target to provider.deleteTable', async () => {
+    const provider = makeProvider();
+    const controller = new DynamodbController(provider);
+    const body = { TableName: 'Test' };
+    await controller.handle('DynamoDB_20120810.DeleteTable', body);
+    expect(provider.deleteTable).toHaveBeenCalledWith(body);
+  });
+
+  it('returns the result of provider.deleteTable', async () => {
+    const provider = makeProvider();
+    const controller = new DynamodbController(provider);
+    const result = await controller.handle('DynamoDB_20120810.DeleteTable', { TableName: 'Test' });
+    expect(result).toEqual({ TableDescription: { TableName: 'Test' } });
+  });
+
+  it('routes PutItem target to provider.putItem', async () => {
+    const provider = makeProvider();
+    const controller = new DynamodbController(provider);
+    const body = { TableName: 'Test', Item: { pk: { S: 'u1' } } };
+    await controller.handle('DynamoDB_20120810.PutItem', body);
+    expect(provider.putItem).toHaveBeenCalledWith(body);
+  });
+
+  it('returns the result of provider.putItem', async () => {
+    const provider = makeProvider();
+    const controller = new DynamodbController(provider);
+    const result = await controller.handle('DynamoDB_20120810.PutItem', { TableName: 'Test', Item: {} });
+    expect(result).toEqual({});
+  });
+
+  it('routes UpdateItem target to provider.updateItem', async () => {
+    const provider = makeProvider();
+    const controller = new DynamodbController(provider);
+    const body = { TableName: 'Test', Key: { pk: { S: 'u1' } }, UpdateExpression: 'SET x = :x' };
+    await controller.handle('DynamoDB_20120810.UpdateItem', body);
+    expect(provider.updateItem).toHaveBeenCalledWith(body);
+  });
+
+  it('returns the result of provider.updateItem', async () => {
+    const provider = makeProvider();
+    const controller = new DynamodbController(provider);
+    const result = await controller.handle('DynamoDB_20120810.UpdateItem', { TableName: 'Test', Key: {} });
+    expect(result).toEqual({});
+  });
+
+  it('routes DeleteItem target to provider.deleteItem', async () => {
+    const provider = makeProvider();
+    const controller = new DynamodbController(provider);
+    const body = { TableName: 'Test', Key: { pk: { S: 'u1' } } };
+    await controller.handle('DynamoDB_20120810.DeleteItem', body);
+    expect(provider.deleteItem).toHaveBeenCalledWith(body);
+  });
+
+  it('returns the result of provider.deleteItem', async () => {
+    const provider = makeProvider();
+    const controller = new DynamodbController(provider);
+    const result = await controller.handle('DynamoDB_20120810.DeleteItem', { TableName: 'Test', Key: {} });
+    expect(result).toEqual({});
   });
 
   it('does not call provider methods for unknown target', async () => {
