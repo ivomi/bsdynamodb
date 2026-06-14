@@ -55,3 +55,12 @@ Thumbs.db
 # yarn.lock
 # package-lock.json
 # pnpm-lock.yaml
+
+# Docker
+
+# MongoDB data
+mongodb_data/
+!mongodb_data/.gitkeep
+
+# Import data files (keep directory, ignore contents)
+import/*.json
