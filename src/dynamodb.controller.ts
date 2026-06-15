@@ -1,9 +1,14 @@
-import { Body, Controller, Headers, HttpException, HttpStatus, Post } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpException, HttpStatus, Post } from '@nestjs/common';
 import { DynamodbProvider } from './dynamodb.provider.js';
 
 @Controller()
 export class DynamodbController {
   constructor(private readonly dynamodbProvider: DynamodbProvider) {}
+
+  @Get('/')
+  get() {
+    return { message: 'DynamoDB mock server is running' };
+  }
 
   @Post('/')
   async handle(@Headers('x-amz-target') target: string, @Body() body: Record<string, unknown>) {
