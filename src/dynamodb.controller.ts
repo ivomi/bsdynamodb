@@ -18,6 +18,8 @@ export class DynamodbController {
         return this.dynamodbProvider.deleteTable(body);
       case 'DynamoDB_20120810.UpdateTable':
         return this.dynamodbProvider.updateTable(body);
+      case 'DynamoDB_20120810.GetItem':
+        return this.dynamodbProvider.getItem(body);
       case 'DynamoDB_20120810.PutItem':
         return this.dynamodbProvider.putItem(body);
       case 'DynamoDB_20120810.UpdateItem':

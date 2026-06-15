@@ -66,8 +66,8 @@ describe('DynamodbProvider.createTable', () => {
     await provider.createTable({ ...minimalInput });
     expect(col.insertOne).toHaveBeenCalledOnce();
     const doc = vi.mocked(col.insertOne).mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(doc['name']).toBe('MyTable');
-    expect(doc['tableStatus']).toBe('ACTIVE');
+    expect(doc['TableName']).toBe('MyTable');
+    expect(doc['TableStatus']).toBe('ACTIVE');
   });
 
   it('defaults BillingMode to PROVISIONED', async () => {
@@ -151,7 +151,7 @@ describe('DynamodbProvider.createTable', () => {
 
 describe('DynamodbProvider.listTables', () => {
   it('returns table names sorted from MongoDB results', async () => {
-    const docs = [{ name: 'Alpha' }, { name: 'Beta' }];
+    const docs = [{ TableName: 'Alpha' }, { TableName: 'Beta' }];
     const col = makeCollectionMock(null, docs);
     const provider = makeProvider(col);
     const result = await provider.listTables({});
@@ -159,7 +159,7 @@ describe('DynamodbProvider.listTables', () => {
   });
 
   it('does not include LastEvaluatedTableName when results fit within limit', async () => {
-    const docs = [{ name: 'A' }, { name: 'B' }];
+    const docs = [{ TableName: 'A' }, { TableName: 'B' }];
     const col = makeCollectionMock(null, docs);
     const provider = makeProvider(col);
     const result = await provider.listTables({ Limit: 10 });
@@ -168,7 +168,7 @@ describe('DynamodbProvider.listTables', () => {
 
   it('includes LastEvaluatedTableName when results exceed limit', async () => {
     // Limit is 2, so query fetches limit+1 = 3 docs; if 3 returned, there are more
-    const docs = [{ name: 'A' }, { name: 'B' }, { name: 'C' }];
+    const docs = [{ TableName: 'A' }, { TableName: 'B' }, { TableName: 'C' }];
     const col = makeCollectionMock(null, docs);
     const provider = makeProvider(col);
     const result = await provider.listTables({ Limit: 2 });
@@ -180,7 +180,7 @@ describe('DynamodbProvider.listTables', () => {
     const col = makeCollectionMock(null, []);
     const provider = makeProvider(col);
     await provider.listTables({ ExclusiveStartTableName: 'MyTable' });
-    expect(col.find).toHaveBeenCalledWith({ name: { $gt: 'MyTable' } });
+    expect(col.find).toHaveBeenCalledWith({ TableName: { $gt: 'MyTable' } });
   });
 
   it('uses empty filter when ExclusiveStartTableName is not provided', async () => {
@@ -195,7 +195,7 @@ describe('DynamodbProvider.listTables', () => {
     const provider = makeProvider(col);
     await provider.listTables({});
     const cursor = vi.mocked(col.find).mock.results[0]?.value as ReturnType<typeof makeCursorMock>;
-    expect(cursor.sort).toHaveBeenCalledWith({ name: 1 });
+    expect(cursor.sort).toHaveBeenCalledWith({ TableName: 1 });
   });
 
   it('applies limit+1 to detect next page', async () => {
@@ -259,14 +259,67 @@ function makeProviderWithItemCollections(
 }
 
 const tableDoc = {
-  name: 'MyTable',
-  keySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
-  attributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }],
-  tableStatus: 'ACTIVE',
-  tableArn: 'arn:aws:dynamodb:us-east-1:000000000000:table/MyTable',
-  tableId: 'table-id-1',
-  billingMode: 'PROVISIONED',
+  TableName: 'MyTable',
+  KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+  AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }],
+  TableStatus: 'ACTIVE',
+  TableArn: 'arn:aws:dynamodb:us-east-1:000000000000:table/MyTable',
+  TableId: 'table-id-1',
+  BillingMode: 'PROVISIONED',
 };
+
+describe('DynamodbProvider.getItem', () => {
+  const key = { pk: { S: 'user-1' } };
+
+  it('returns Item marshalled to DynamoDB format when item exists', async () => {
+    const existing = { pk: 'user-1', name: 'Alice' };
+    const itemCol = makeItemCollectionMock({ findOneResult: existing });
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    const result = await provider.getItem({ TableName: 'MyTable', Key: key });
+    const item = (result as Record<string, unknown>)['Item'] as Record<string, unknown>;
+    expect(item['pk']).toEqual({ S: 'user-1' });
+    expect(item['name']).toEqual({ S: 'Alice' });
+    expect(item['_id']).toBeUndefined();
+  });
+
+  it('returns empty object when item does not exist', async () => {
+    const itemCol = makeItemCollectionMock({ findOneResult: null });
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    const result = await provider.getItem({ TableName: 'MyTable', Key: key });
+    expect(result).toEqual({});
+  });
+
+  it('queries collection with key filter', async () => {
+    const itemCol = makeItemCollectionMock({ findOneResult: null });
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    await provider.getItem({ TableName: 'MyTable', Key: key });
+    expect(itemCol.findOne).toHaveBeenCalledWith({ pk: 'user-1' });
+  });
+
+  it('throws ResourceNotFoundException when table does not exist', async () => {
+    const itemCol = makeItemCollectionMock({});
+    const provider = makeProviderWithItemCollections(null, itemCol);
+    let caught: HttpException | undefined;
+    try {
+      await provider.getItem({ TableName: 'Missing', Key: key });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    expect((caught!.getResponse() as Record<string, unknown>)['__type']).toBe('ResourceNotFoundException');
+  });
+
+  it('throws ValidationException when Key is missing', async () => {
+    const itemCol = makeItemCollectionMock({});
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    let caught: HttpException | undefined;
+    try {
+      await provider.getItem({ TableName: 'MyTable' });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    expect((caught!.getResponse() as Record<string, unknown>)['__type']).toBe('ValidationException');
+  });
+});
 
 describe('DynamodbProvider.putItem', () => {
   const item = { pk: { S: 'user-1' }, name: { S: 'Alice' } };
@@ -486,7 +539,7 @@ describe('DynamodbProvider.describeTable', () => {
     const col = makeCollectionMock({ name: 'MyTable' });
     const provider = makeProvider(col);
     await provider.describeTable({ TableName: 'MyTable' });
-    expect(col.findOne).toHaveBeenCalledWith({ name: 'MyTable' });
+    expect(col.findOne).toHaveBeenCalledWith({ TableName: 'MyTable' }, { projection: { _id: 0 } });
   });
 
   it('throws ResourceNotFoundException when table does not exist', async () => {

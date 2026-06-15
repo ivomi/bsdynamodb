@@ -28,7 +28,7 @@ export async function validateCreateTable(
     );
   }
 
-  const existing = await tables.findOne({ name: tableName });
+  const existing = await tables.findOne({ TableName: tableName });
   if (existing != null) {
     throw new HttpException(
       { __type: 'ResourceInConflictException', message: `Table already exists: ${tableName}` },

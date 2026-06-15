@@ -86,6 +86,6 @@ describe('validateCreateTable', () => {
   it('calls findOne with the table name to check for duplicates', async () => {
     const col = makeCollection(null);
     await validateCreateTable(validBody, col);
-    expect(col.findOne).toHaveBeenCalledWith({ name: 'MyTable' });
+    expect(col.findOne).toHaveBeenCalledWith({ TableName: 'MyTable' });
   });
 });

@@ -73,6 +73,14 @@ export interface UpdateItemInput {
   ReturnValues?: 'NONE' | 'ALL_OLD' | 'UPDATED_OLD' | 'ALL_NEW' | 'UPDATED_NEW';
 }
 
+export interface GetItemInput {
+  TableName: string;
+  Key: Item;
+  ProjectionExpression?: string;
+  ExpressionAttributeNames?: Record<string, string>;
+  ConsistentRead?: boolean;
+}
+
 export interface CreateTableInput {
   TableName: string;
   KeySchema: KeySchemaElement[];
