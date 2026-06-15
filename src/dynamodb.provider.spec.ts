@@ -224,12 +224,14 @@ describe('DynamodbProvider.listTables', () => {
 
 function makeItemCollectionMock(opts: {
   findOneResult?: Record<string, unknown> | null;
+  findDocs?: Record<string, unknown>[];
   replaceOneResult?: unknown;
   deleteOneResult?: unknown;
   updateOneResult?: unknown;
 }) {
   return {
     findOne: vi.fn().mockResolvedValue(opts.findOneResult ?? null),
+    find: vi.fn().mockReturnValue(makeCursorMock(opts.findDocs ?? [])),
     replaceOne: vi.fn().mockResolvedValue(opts.replaceOneResult ?? { modifiedCount: 1 }),
     deleteOne: vi.fn().mockResolvedValue(opts.deleteOneResult ?? { deletedCount: 1 }),
     updateOne: vi.fn().mockResolvedValue(opts.updateOneResult ?? { modifiedCount: 1 }),
@@ -567,5 +569,383 @@ describe('DynamodbProvider.describeTable', () => {
     }
     const response = caught!.getResponse() as Record<string, unknown>;
     expect(response['__type']).toBe('ValidationException');
+  });
+});
+
+describe('DynamodbProvider.scan', () => {
+  const storedItems = [
+    { pk: 'user-1', status: 'active', age: 25 },
+    { pk: 'user-2', status: 'inactive', age: 30 },
+    { pk: 'user-3', status: 'active', age: 35 },
+  ];
+
+  function makeScanProvider(findDocs: Record<string, unknown>[], findOneForKey: Record<string, unknown> | null = null) {
+    const config = new ConfigService();
+    const provider = new DynamodbProvider(config);
+    const tablesCol = {
+      findOne: vi.fn().mockResolvedValue(tableDoc),
+      insertOne: vi.fn().mockResolvedValue({}),
+      find: vi.fn().mockReturnValue(makeCursorMock([])),
+    };
+    const itemCursor = makeCursorMock(findDocs);
+    const itemCol = {
+      findOne: vi.fn().mockResolvedValue(findOneForKey),
+      find: vi.fn().mockReturnValue(itemCursor),
+      replaceOne: vi.fn(),
+      deleteOne: vi.fn(),
+      updateOne: vi.fn(),
+    };
+    const db = {
+      collection: vi.fn().mockImplementation((name: string) => name === '_tables' ? tablesCol : itemCol),
+      createCollection: vi.fn().mockResolvedValue(undefined),
+      dropCollection: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Db;
+    (provider as unknown as Record<string, unknown>)['db'] = db;
+    return { provider, itemCol, itemCursor };
+  }
+
+  it('returns all items marshalled to DynamoDB format', async () => {
+    const { provider } = makeScanProvider(storedItems);
+    const result = await provider.scan({ TableName: 'MyTable' }) as Record<string, unknown>;
+    const items = result['Items'] as Record<string, unknown>[];
+    expect(items).toHaveLength(3);
+    expect(items[0]!['pk']).toEqual({ S: 'user-1' });
+    expect(items[0]!['age']).toEqual({ N: '25' });
+  });
+
+  it('returns Count and ScannedCount equal to the number of items', async () => {
+    const { provider } = makeScanProvider(storedItems);
+    const result = await provider.scan({ TableName: 'MyTable' }) as Record<string, unknown>;
+    expect(result['Count']).toBe(3);
+    expect(result['ScannedCount']).toBe(3);
+  });
+
+  it('passes FilterExpression as a MongoDB filter', async () => {
+    const { provider, itemCol } = makeScanProvider(storedItems);
+    await provider.scan({
+      TableName: 'MyTable',
+      FilterExpression: '#s = :val',
+      ExpressionAttributeNames: { '#s': 'status' },
+      ExpressionAttributeValues: { ':val': { S: 'active' } },
+    });
+    const filter = vi.mocked(itemCol.find).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(filter).toMatchObject({ status: 'active' });
+  });
+
+  it('applies limit+1 to detect next page', async () => {
+    const { provider, itemCursor } = makeScanProvider(storedItems);
+    await provider.scan({ TableName: 'MyTable', Limit: 2 });
+    expect(itemCursor.limit).toHaveBeenCalledWith(3);
+  });
+
+  it('includes LastEvaluatedKey when results exceed Limit', async () => {
+    const { provider } = makeScanProvider(storedItems); // 3 items, limit 2
+    const result = await provider.scan({ TableName: 'MyTable', Limit: 2 }) as Record<string, unknown>;
+    const items = result['Items'] as unknown[];
+    expect(items).toHaveLength(2);
+    const lek = result['LastEvaluatedKey'] as Record<string, unknown>;
+    expect(lek).toBeDefined();
+    expect(lek['pk']).toEqual({ S: 'user-2' });
+  });
+
+  it('does not include LastEvaluatedKey when results fit within Limit', async () => {
+    const { provider } = makeScanProvider(storedItems.slice(0, 2)); // 2 items, limit 5
+    const result = await provider.scan({ TableName: 'MyTable', Limit: 5 }) as Record<string, unknown>;
+    expect(result['LastEvaluatedKey']).toBeUndefined();
+  });
+
+  it('uses ExclusiveStartKey to build _id $gt cursor filter', async () => {
+    const lastDoc = { _id: 'mongo-id-2', pk: 'user-2' };
+    const { provider, itemCol } = makeScanProvider(storedItems, lastDoc);
+    await provider.scan({ TableName: 'MyTable', ExclusiveStartKey: { pk: { S: 'user-2' } } });
+    const filter = vi.mocked(itemCol.find).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(filter).toMatchObject({ _id: { $gt: 'mongo-id-2' } });
+  });
+
+  it('returns only Count and ScannedCount when Select is COUNT', async () => {
+    const { provider } = makeScanProvider(storedItems);
+    const result = await provider.scan({ TableName: 'MyTable', Select: 'COUNT' }) as Record<string, unknown>;
+    expect(result['Count']).toBe(3);
+    expect(result['ScannedCount']).toBe(3);
+    expect(result['Items']).toBeUndefined();
+  });
+
+  it('applies ProjectionExpression to returned items', async () => {
+    const { provider } = makeScanProvider(storedItems);
+    const result = await provider.scan({
+      TableName: 'MyTable',
+      ProjectionExpression: 'pk',
+    }) as Record<string, unknown>;
+    const items = result['Items'] as Record<string, unknown>[];
+    expect(items[0]).toHaveProperty('pk');
+    expect(items[0]).not.toHaveProperty('status');
+    expect(items[0]).not.toHaveProperty('age');
+  });
+
+  it('throws ResourceNotFoundException when table does not exist', async () => {
+    const config = new ConfigService();
+    const provider = new DynamodbProvider(config);
+    const tablesCol = { findOne: vi.fn().mockResolvedValue(null), find: vi.fn().mockReturnValue(makeCursorMock([])) };
+    const db = {
+      collection: vi.fn().mockReturnValue(tablesCol),
+      createCollection: vi.fn(),
+    } as unknown as Db;
+    (provider as unknown as Record<string, unknown>)['db'] = db;
+
+    let caught: HttpException | undefined;
+    try {
+      await provider.scan({ TableName: 'Missing' });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    expect((caught!.getResponse() as Record<string, unknown>)['__type']).toBe('ResourceNotFoundException');
+  });
+
+  it('throws ValidationException when TableName is missing', async () => {
+    const { provider } = makeScanProvider([]);
+    let caught: HttpException | undefined;
+    try {
+      await provider.scan({});
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    expect((caught!.getResponse() as Record<string, unknown>)['__type']).toBe('ValidationException');
+  });
+});
+
+describe('DynamodbProvider.query', () => {
+  const tableDocHashRange = {
+    TableName: 'MyTable',
+    KeySchema: [
+      { AttributeName: 'pk', KeyType: 'HASH' },
+      { AttributeName: 'sk', KeyType: 'RANGE' },
+    ],
+  };
+
+  const tableDocHashOnly = {
+    TableName: 'MyTable',
+    KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+  };
+
+  const storedItems = [
+    { pk: 'user-1', sk: 'a', status: 'active' },
+    { pk: 'user-1', sk: 'b', status: 'inactive' },
+    { pk: 'user-1', sk: 'c', status: 'active' },
+  ];
+
+  function makeQueryProvider(
+    tableDoc: Record<string, unknown>,
+    findDocs: Record<string, unknown>[],
+    findOneForKey: Record<string, unknown> | null = null,
+  ) {
+    const config = new ConfigService();
+    const provider = new DynamodbProvider(config);
+    const tablesCol = {
+      findOne: vi.fn().mockResolvedValue(tableDoc),
+      insertOne: vi.fn().mockResolvedValue({}),
+      find: vi.fn().mockReturnValue(makeCursorMock([])),
+    };
+    const itemCursor = makeCursorMock(findDocs);
+    const itemCol = {
+      findOne: vi.fn().mockResolvedValue(findOneForKey),
+      find: vi.fn().mockReturnValue(itemCursor),
+      replaceOne: vi.fn(),
+      deleteOne: vi.fn(),
+      updateOne: vi.fn(),
+    };
+    const db = {
+      collection: vi.fn().mockImplementation((name: string) => name === '_tables' ? tablesCol : itemCol),
+      createCollection: vi.fn().mockResolvedValue(undefined),
+      dropCollection: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Db;
+    (provider as unknown as Record<string, unknown>)['db'] = db;
+    return { provider, itemCol, itemCursor };
+  }
+
+  it('returns items marshalled to DynamoDB format', async () => {
+    const { provider } = makeQueryProvider(tableDocHashRange, storedItems);
+    const result = await provider.query({ TableName: 'MyTable', KeyConditionExpression: 'pk = :pk', ExpressionAttributeValues: { ':pk': { S: 'user-1' } } }) as Record<string, unknown>;
+    const items = result['Items'] as Record<string, unknown>[];
+    expect(items).toHaveLength(3);
+    expect(items[0]!['pk']).toEqual({ S: 'user-1' });
+    expect(items[0]!['sk']).toEqual({ S: 'a' });
+  });
+
+  it('returns Count and ScannedCount equal to number of items', async () => {
+    const { provider } = makeQueryProvider(tableDocHashRange, storedItems);
+    const result = await provider.query({ TableName: 'MyTable', KeyConditionExpression: 'pk = :pk', ExpressionAttributeValues: { ':pk': { S: 'user-1' } } }) as Record<string, unknown>;
+    expect(result['Count']).toBe(3);
+    expect(result['ScannedCount']).toBe(3);
+  });
+
+  it('passes KeyConditionExpression as a MongoDB filter', async () => {
+    const { provider, itemCol } = makeQueryProvider(tableDocHashRange, storedItems);
+    await provider.query({
+      TableName: 'MyTable',
+      KeyConditionExpression: 'pk = :pk',
+      ExpressionAttributeValues: { ':pk': { S: 'user-1' } },
+    });
+    const filter = vi.mocked(itemCol.find).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(filter).toMatchObject({ pk: 'user-1' });
+  });
+
+  it('merges FilterExpression with KeyConditionExpression via $and', async () => {
+    const { provider, itemCol } = makeQueryProvider(tableDocHashRange, storedItems);
+    await provider.query({
+      TableName: 'MyTable',
+      KeyConditionExpression: 'pk = :pk',
+      FilterExpression: 'status = :s',
+      ExpressionAttributeValues: { ':pk': { S: 'user-1' }, ':s': { S: 'active' } },
+    });
+    const filter = vi.mocked(itemCol.find).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(filter).toHaveProperty('$and');
+    const clauses = filter['$and'] as Record<string, unknown>[];
+    expect(clauses.some((c) => 'pk' in c)).toBe(true);
+    expect(clauses.some((c) => 'status' in c)).toBe(true);
+  });
+
+  it('sorts ascending on range key when ScanIndexForward is true (default)', async () => {
+    const { provider, itemCursor } = makeQueryProvider(tableDocHashRange, storedItems);
+    await provider.query({ TableName: 'MyTable', KeyConditionExpression: 'pk = :pk', ExpressionAttributeValues: { ':pk': { S: 'user-1' } } });
+    expect(itemCursor.sort).toHaveBeenCalledWith({ sk: 1 });
+  });
+
+  it('sorts descending on range key when ScanIndexForward is false', async () => {
+    const { provider, itemCursor } = makeQueryProvider(tableDocHashRange, storedItems);
+    await provider.query({ TableName: 'MyTable', KeyConditionExpression: 'pk = :pk', ExpressionAttributeValues: { ':pk': { S: 'user-1' } }, ScanIndexForward: false });
+    expect(itemCursor.sort).toHaveBeenCalledWith({ sk: -1 });
+  });
+
+  it('does not call sort on HASH-only table', async () => {
+    const { provider, itemCursor } = makeQueryProvider(tableDocHashOnly, storedItems);
+    await provider.query({ TableName: 'MyTable', KeyConditionExpression: 'pk = :pk', ExpressionAttributeValues: { ':pk': { S: 'user-1' } } });
+    expect(itemCursor.sort).not.toHaveBeenCalled();
+  });
+
+  it('applies limit+1 to detect next page', async () => {
+    const { provider, itemCursor } = makeQueryProvider(tableDocHashRange, storedItems);
+    await provider.query({ TableName: 'MyTable', KeyConditionExpression: 'pk = :pk', ExpressionAttributeValues: { ':pk': { S: 'user-1' } }, Limit: 2 });
+    expect(itemCursor.limit).toHaveBeenCalledWith(3);
+  });
+
+  it('includes LastEvaluatedKey with pk and sk when results exceed Limit', async () => {
+    const { provider } = makeQueryProvider(tableDocHashRange, storedItems);
+    const result = await provider.query({ TableName: 'MyTable', KeyConditionExpression: 'pk = :pk', ExpressionAttributeValues: { ':pk': { S: 'user-1' } }, Limit: 2 }) as Record<string, unknown>;
+    expect((result['Items'] as unknown[]).length).toBe(2);
+    const lek = result['LastEvaluatedKey'] as Record<string, unknown>;
+    expect(lek['pk']).toEqual({ S: 'user-1' });
+    expect(lek['sk']).toEqual({ S: 'b' });
+  });
+
+  it('does not include LastEvaluatedKey when results fit within Limit', async () => {
+    const { provider } = makeQueryProvider(tableDocHashRange, storedItems.slice(0, 2));
+    const result = await provider.query({ TableName: 'MyTable', KeyConditionExpression: 'pk = :pk', ExpressionAttributeValues: { ':pk': { S: 'user-1' } }, Limit: 5 }) as Record<string, unknown>;
+    expect(result['LastEvaluatedKey']).toBeUndefined();
+  });
+
+  it('uses range key $gt for ascending pagination with ExclusiveStartKey', async () => {
+    const lastDoc = { _id: 'mongo-id-1', pk: 'user-1', sk: 'a' };
+    const { provider, itemCol } = makeQueryProvider(tableDocHashRange, storedItems, lastDoc);
+    await provider.query({
+      TableName: 'MyTable',
+      KeyConditionExpression: 'pk = :pk',
+      ExpressionAttributeValues: { ':pk': { S: 'user-1' } },
+      ExclusiveStartKey: { pk: { S: 'user-1' }, sk: { S: 'a' } },
+    });
+    const filter = vi.mocked(itemCol.find).mock.calls[0]?.[0] as Record<string, unknown>;
+    const clauses = (filter['$and'] as Record<string, unknown>[]);
+    expect(clauses.some((c) => JSON.stringify(c).includes('$gt'))).toBe(true);
+  });
+
+  it('uses range key $lt for descending pagination with ExclusiveStartKey', async () => {
+    const lastDoc = { _id: 'mongo-id-1', pk: 'user-1', sk: 'b' };
+    const { provider, itemCol } = makeQueryProvider(tableDocHashRange, storedItems, lastDoc);
+    await provider.query({
+      TableName: 'MyTable',
+      KeyConditionExpression: 'pk = :pk',
+      ExpressionAttributeValues: { ':pk': { S: 'user-1' } },
+      ExclusiveStartKey: { pk: { S: 'user-1' }, sk: { S: 'b' } },
+      ScanIndexForward: false,
+    });
+    const filter = vi.mocked(itemCol.find).mock.calls[0]?.[0] as Record<string, unknown>;
+    const clauses = (filter['$and'] as Record<string, unknown>[]);
+    expect(clauses.some((c) => JSON.stringify(c).includes('$lt'))).toBe(true);
+  });
+
+  it('falls back to _id $gt pagination for HASH-only table with ExclusiveStartKey', async () => {
+    const lastDoc = { _id: 'mongo-id-2', pk: 'user-1' };
+    const { provider, itemCol } = makeQueryProvider(tableDocHashOnly, storedItems, lastDoc);
+    await provider.query({
+      TableName: 'MyTable',
+      KeyConditionExpression: 'pk = :pk',
+      ExpressionAttributeValues: { ':pk': { S: 'user-1' } },
+      ExclusiveStartKey: { pk: { S: 'user-1' } },
+    });
+    const filter = vi.mocked(itemCol.find).mock.calls[0]?.[0] as Record<string, unknown>;
+    const clauses = (filter['$and'] as Record<string, unknown>[]);
+    expect(clauses.some((c) => JSON.stringify(c).includes('"$gt"'))).toBe(true);
+    expect(clauses.some((c) => '_id' in c)).toBe(true);
+  });
+
+  it('returns only Count and ScannedCount when Select is COUNT', async () => {
+    const { provider } = makeQueryProvider(tableDocHashRange, storedItems);
+    const result = await provider.query({ TableName: 'MyTable', KeyConditionExpression: 'pk = :pk', ExpressionAttributeValues: { ':pk': { S: 'user-1' } }, Select: 'COUNT' }) as Record<string, unknown>;
+    expect(result['Count']).toBe(3);
+    expect(result['ScannedCount']).toBe(3);
+    expect(result['Items']).toBeUndefined();
+  });
+
+  it('applies ProjectionExpression to returned items', async () => {
+    const { provider } = makeQueryProvider(tableDocHashRange, storedItems);
+    const result = await provider.query({
+      TableName: 'MyTable',
+      KeyConditionExpression: 'pk = :pk',
+      ExpressionAttributeValues: { ':pk': { S: 'user-1' } },
+      ProjectionExpression: 'pk',
+    }) as Record<string, unknown>;
+    const items = result['Items'] as Record<string, unknown>[];
+    expect(items[0]).toHaveProperty('pk');
+    expect(items[0]).not.toHaveProperty('sk');
+    expect(items[0]).not.toHaveProperty('status');
+  });
+
+  it('throws ResourceNotFoundException when table does not exist', async () => {
+    const config = new ConfigService();
+    const provider = new DynamodbProvider(config);
+    const tablesCol = { findOne: vi.fn().mockResolvedValue(null), find: vi.fn().mockReturnValue(makeCursorMock([])) };
+    const db = {
+      collection: vi.fn().mockReturnValue(tablesCol),
+      createCollection: vi.fn(),
+    } as unknown as Db;
+    (provider as unknown as Record<string, unknown>)['db'] = db;
+    let caught: HttpException | undefined;
+    try {
+      await provider.query({ TableName: 'Missing', KeyConditionExpression: 'pk = :pk' });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    expect((caught!.getResponse() as Record<string, unknown>)['__type']).toBe('ResourceNotFoundException');
+  });
+
+  it('throws ValidationException when TableName is missing', async () => {
+    const { provider } = makeQueryProvider(tableDocHashRange, []);
+    let caught: HttpException | undefined;
+    try {
+      await provider.query({ KeyConditionExpression: 'pk = :pk' });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    expect((caught!.getResponse() as Record<string, unknown>)['__type']).toBe('ValidationException');
+  });
+
+  it('throws ValidationException when KeyConditionExpression is missing', async () => {
+    const { provider } = makeQueryProvider(tableDocHashRange, []);
+    let caught: HttpException | undefined;
+    try {
+      await provider.query({ TableName: 'MyTable' });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    expect((caught!.getResponse() as Record<string, unknown>)['__type']).toBe('ValidationException');
   });
 });

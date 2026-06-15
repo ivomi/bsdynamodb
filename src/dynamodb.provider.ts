@@ -10,11 +10,15 @@ import type {
   GetItemInput,
   GlobalSecondaryIndexUpdate,
   PutItemInput,
+  QueryInput,
+  ScanInput,
   UpdateItemInput,
   UpdateTableInput,
 } from './dynamodb.types.js';
 import { buildKeyFilter } from './helpers/build-key-filter.js';
 import { marshalItem } from './helpers/marshal-item.js';
+import { marshalValue } from './helpers/marshal-value.js';
+import { parseFilterExpression } from './helpers/parse-filter-expression.js';
 import { parseUpdateExpression } from './helpers/parse-update-expression.js';
 import { stripId } from './helpers/strip-id.js';
 import { unmarshalItem } from './helpers/unmarshal-item.js';
@@ -26,6 +30,8 @@ import { validateDeleteTable } from './validation-request/delete-table.js';
 import { validateDescribeTable } from './validation-request/describe-table.js';
 import { parseListTables } from './validation-request/list-tables.js';
 import { validatePutItem } from './validation-request/put-item.js';
+import { validateQuery } from './validation-request/query.js';
+import { validateScan } from './validation-request/scan.js';
 import { validateUpdateItem } from './validation-request/update-item.js';
 import { validateUpdateTable } from './validation-request/update-table.js';
 
@@ -388,5 +394,172 @@ export class DynamodbProvider implements OnModuleInit, OnModuleDestroy {
       );
     }
     return { Table: doc as unknown as TableDescription };
+  }
+
+  async scan(body: Record<string, unknown>) {
+    const tableName = validateScan(body);
+    const tableDoc = await this.db.collection('_tables').findOne({ TableName: tableName });
+    if (tableDoc == null) {
+      throw new HttpException(
+        { __type: 'ResourceNotFoundException', message: `Table not found: ${tableName}` },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const input = body as unknown as ScanInput;
+    const names = input.ExpressionAttributeNames ?? {};
+    const rawValues = (input.ExpressionAttributeValues ?? {}) as Record<string, unknown>;
+    const values = Object.fromEntries(
+      Object.entries(rawValues).map(([k, v]) => [k, unmarshalValue(v)]),
+    );
+
+    let mongoFilter: Record<string, unknown> = {};
+
+    if (input.ExclusiveStartKey != null) {
+      const keySchema = tableDoc['KeySchema'] as Array<{ AttributeName: string }>;
+      const lastKeyFilter = buildKeyFilter(keySchema, input.ExclusiveStartKey as Record<string, unknown>);
+      const lastDoc = await this.db.collection(tableName).findOne(lastKeyFilter);
+      if (lastDoc != null) {
+        mongoFilter['_id'] = { $gt: lastDoc['_id'] };
+      }
+    }
+
+    if (input.FilterExpression != null) {
+      const filterClause = parseFilterExpression(input.FilterExpression, names, values);
+      mongoFilter = Object.keys(mongoFilter).length > 0
+        ? { $and: [mongoFilter, filterClause] }
+        : filterClause;
+    }
+
+    const limit = input.Limit;
+    let cursor = this.db.collection(tableName).find(mongoFilter);
+    if (limit != null) cursor = cursor.limit(limit + 1);
+
+    const docs = await cursor.toArray();
+    const hasMore = limit != null && docs.length > limit;
+    const page = hasMore ? docs.slice(0, limit) : docs;
+
+    if (input.Select === 'COUNT') {
+      return { Count: page.length, ScannedCount: page.length };
+    }
+
+    const keySchema = tableDoc['KeySchema'] as Array<{ AttributeName: string }>;
+    let items = page.map((doc) => marshalItem(stripId(doc)));
+
+    if (input.ProjectionExpression != null) {
+      const projectedAttrs = input.ProjectionExpression.split(',').map((p) => {
+        const part = p.trim().split('.')[0]!;
+        return names[part] ?? part;
+      });
+      items = items.map((item) =>
+        Object.fromEntries(Object.entries(item).filter(([k]) => projectedAttrs.includes(k))),
+      );
+    }
+
+    const result: Record<string, unknown> = {
+      Items: items,
+      Count: items.length,
+      ScannedCount: items.length,
+    };
+
+    if (hasMore) {
+      const lastRaw = page[page.length - 1]!;
+      const lastKey: Record<string, unknown> = {};
+      for (const { AttributeName } of keySchema) {
+        if (AttributeName in lastRaw) {
+          lastKey[AttributeName] = marshalValue(lastRaw[AttributeName]);
+        }
+      }
+      result['LastEvaluatedKey'] = lastKey;
+    }
+
+    return result;
+  }
+
+  async query(body: Record<string, unknown>) {
+    const tableName = validateQuery(body);
+    const tableDoc = await this.db.collection('_tables').findOne({ TableName: tableName });
+    if (tableDoc == null) {
+      throw new HttpException(
+        { __type: 'ResourceNotFoundException', message: `Table not found: ${tableName}` },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const input = body as unknown as QueryInput;
+    const names = input.ExpressionAttributeNames ?? {};
+    const rawValues = (input.ExpressionAttributeValues ?? {}) as Record<string, unknown>;
+    const values = Object.fromEntries(
+      Object.entries(rawValues).map(([k, v]) => [k, unmarshalValue(v)]),
+    );
+
+    const keySchema = tableDoc['KeySchema'] as Array<{ AttributeName: string; KeyType: string }>;
+    const rangeKeyAttr = keySchema.find((k) => k.KeyType === 'RANGE')?.AttributeName;
+    const ascending = input.ScanIndexForward !== false;
+
+    const clauses: Record<string, unknown>[] = [
+      parseFilterExpression(input.KeyConditionExpression, names, values),
+    ];
+
+    if (input.ExclusiveStartKey != null) {
+      const lastKeyFilter = buildKeyFilter(keySchema, input.ExclusiveStartKey as Record<string, unknown>);
+      const lastDoc = await this.db.collection(tableName).findOne(lastKeyFilter);
+      if (lastDoc != null) {
+        if (rangeKeyAttr != null) {
+          const op = ascending ? '$gt' : '$lt';
+          clauses.push({ [rangeKeyAttr]: { [op]: lastDoc[rangeKeyAttr] } });
+        } else {
+          clauses.push({ _id: { $gt: lastDoc['_id'] } });
+        }
+      }
+    }
+
+    if (input.FilterExpression != null) {
+      clauses.push(parseFilterExpression(input.FilterExpression, names, values));
+    }
+
+    const mongoFilter = clauses.length === 1 ? clauses[0]! : { $and: clauses };
+
+    const limit = input.Limit;
+    let cursor = this.db.collection(tableName).find(mongoFilter);
+    if (rangeKeyAttr != null) cursor = cursor.sort({ [rangeKeyAttr]: ascending ? 1 : -1 });
+    if (limit != null) cursor = cursor.limit(limit + 1);
+
+    const docs = await cursor.toArray();
+    const hasMore = limit != null && docs.length > limit;
+    const page = hasMore ? docs.slice(0, limit) : docs;
+
+    if (input.Select === 'COUNT') {
+      return { Count: page.length, ScannedCount: page.length };
+    }
+
+    let items = page.map((doc) => marshalItem(stripId(doc)));
+
+    if (input.ProjectionExpression != null) {
+      const projectedAttrs = input.ProjectionExpression.split(',').map((p) => {
+        const part = p.trim().split('.')[0]!;
+        return names[part] ?? part;
+      });
+      items = items.map((item) =>
+        Object.fromEntries(Object.entries(item).filter(([k]) => projectedAttrs.includes(k))),
+      );
+    }
+
+    const result: Record<string, unknown> = {
+      Items: items,
+      Count: items.length,
+      ScannedCount: items.length,
+    };
+
+    if (hasMore) {
+      const lastRaw = page[page.length - 1]!;
+      const lastKey: Record<string, unknown> = {};
+      for (const { AttributeName } of keySchema) {
+        if (AttributeName in lastRaw) lastKey[AttributeName] = marshalValue(lastRaw[AttributeName]);
+      }
+      result['LastEvaluatedKey'] = lastKey;
+    }
+
+    return result;
   }
 }

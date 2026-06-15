@@ -26,6 +26,10 @@ export class DynamodbController {
         return this.dynamodbProvider.updateItem(body);
       case 'DynamoDB_20120810.DeleteItem':
         return this.dynamodbProvider.deleteItem(body);
+      case 'DynamoDB_20120810.Query':
+        return this.dynamodbProvider.query(body);
+      case 'DynamoDB_20120810.Scan':
+        return this.dynamodbProvider.scan(body);
       default:
         throw new HttpException(
           { __type: 'UnknownOperationException', message: `Unknown operation: ${target}` },

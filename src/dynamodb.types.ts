@@ -81,6 +81,36 @@ export interface GetItemInput {
   ConsistentRead?: boolean;
 }
 
+export interface ScanInput {
+  TableName: string;
+  FilterExpression?: string;
+  ExpressionAttributeNames?: Record<string, string>;
+  ExpressionAttributeValues?: Item;
+  ProjectionExpression?: string;
+  Limit?: number;
+  ExclusiveStartKey?: Item;
+  Select?: 'ALL_ATTRIBUTES' | 'COUNT' | 'SPECIFIC_ATTRIBUTES' | 'ALL_PROJECTED_ATTRIBUTES';
+  IndexName?: string;
+  ConsistentRead?: boolean;
+  Segment?: number;
+  TotalSegments?: number;
+}
+
+export interface QueryInput {
+  TableName: string;
+  KeyConditionExpression: string;
+  FilterExpression?: string;
+  ExpressionAttributeNames?: Record<string, string>;
+  ExpressionAttributeValues?: Item;
+  ProjectionExpression?: string;
+  Limit?: number;
+  ExclusiveStartKey?: Item;
+  ScanIndexForward?: boolean;
+  Select?: 'ALL_ATTRIBUTES' | 'COUNT' | 'SPECIFIC_ATTRIBUTES' | 'ALL_PROJECTED_ATTRIBUTES';
+  IndexName?: string;
+  ConsistentRead?: boolean;
+}
+
 export interface CreateTableInput {
   TableName: string;
   KeySchema: KeySchemaElement[];
