@@ -7,7 +7,7 @@ export class DynamodbController {
 
   @Get('/')
   get() {
-    return { message: 'DynamoDB mock server is running' };
+    return { message: 'DynamoDB local server is running' };
   }
 
   @Post('/')
@@ -35,6 +35,14 @@ export class DynamodbController {
         return this.dynamodbProvider.query(body);
       case 'DynamoDB_20120810.Scan':
         return this.dynamodbProvider.scan(body);
+      case 'DynamoDB_20120810.DescribeTimeToLive':
+        return this.dynamodbProvider.describeTimeToLive(body);
+      case 'DynamoDB_20120810.DescribeContinuousBackups':
+        return this.dynamodbProvider.describeContinuousBackups(body);
+      case 'DynamoDB_20120810.UpdateContinuousBackups':
+        return this.dynamodbProvider.updateContinuousBackups(body);
+      case 'DynamoDB_20120810.BatchWriteItem':
+        return this.dynamodbProvider.batchWriteItem(body);
       default:
         throw new HttpException(
           { __type: 'UnknownOperationException', message: `Unknown operation: ${target}` },

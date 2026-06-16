@@ -124,3 +124,21 @@ export interface CreateTableInput {
   SSESpecification?: unknown;
   StreamSpecification?: unknown;
 }
+
+export interface BatchWriteItemInput {
+  RequestItems: Record<string, Array<{
+    PutRequest?: { Item: Item };
+    DeleteRequest?: { Key: Item };
+  }>>;
+  ReturnConsumedCapacity?: 'INDEXES' | 'TOTAL' | 'NONE';
+  ReturnItemCollectionMetrics?: 'SIZE' | 'NONE';
+}
+
+export interface DescribeContinuousBackupsInput {
+  TableName: string;
+}
+
+export interface UpdateContinuousBackupsInput {
+  TableName: string;
+  PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: boolean };
+}

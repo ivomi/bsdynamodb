@@ -18,6 +18,7 @@ function makeCollectionMock(findOneResult: Record<string, unknown> | null, findD
     findOne: vi.fn().mockResolvedValue(findOneResult),
     insertOne: vi.fn().mockResolvedValue({ insertedId: 'mock-id' }),
     find: vi.fn().mockReturnValue(makeCursorMock(findDocs)),
+    updateOne: vi.fn().mockResolvedValue({ modifiedCount: 1 }),
   };
 }
 
@@ -572,6 +573,201 @@ describe('DynamodbProvider.describeTable', () => {
   });
 });
 
+describe('DynamodbProvider.describeTimeToLive', () => {
+  it('returns DISABLED TimeToLiveStatus when table exists', async () => {
+    const col = makeCollectionMock({ TableName: 'MyTable' });
+    const provider = makeProvider(col);
+    const result = await provider.describeTimeToLive({ TableName: 'MyTable' });
+    expect(result.TimeToLiveDescription.TimeToLiveStatus).toBe('DISABLED');
+  });
+
+  it('does not include AttributeName in the response', async () => {
+    const col = makeCollectionMock({ TableName: 'MyTable' });
+    const provider = makeProvider(col);
+    const result = await provider.describeTimeToLive({ TableName: 'MyTable' });
+    expect(result.TimeToLiveDescription.AttributeName).toBeUndefined();
+  });
+
+  it('queries _tables by table name with _id projection', async () => {
+    const col = makeCollectionMock({ TableName: 'MyTable' });
+    const provider = makeProvider(col);
+    await provider.describeTimeToLive({ TableName: 'MyTable' });
+    expect(col.findOne).toHaveBeenCalledWith({ TableName: 'MyTable' }, { projection: { _id: 0 } });
+  });
+
+  it('throws ResourceNotFoundException when table does not exist', async () => {
+    const col = makeCollectionMock(null);
+    const provider = makeProvider(col);
+    let caught: HttpException | undefined;
+    try {
+      await provider.describeTimeToLive({ TableName: 'Missing' });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    const response = caught!.getResponse() as Record<string, unknown>;
+    expect(response['__type']).toBe('ResourceNotFoundException');
+    expect(response['message']).toContain('Missing');
+  });
+
+  it('throws ValidationException for missing TableName', async () => {
+    const col = makeCollectionMock(null);
+    const provider = makeProvider(col);
+    let caught: HttpException | undefined;
+    try {
+      await provider.describeTimeToLive({});
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    const response = caught!.getResponse() as Record<string, unknown>;
+    expect(response['__type']).toBe('ValidationException');
+  });
+});
+
+describe('DynamodbProvider.describeContinuousBackups', () => {
+  it('returns ENABLED ContinuousBackupsStatus when table exists', async () => {
+    const col = makeCollectionMock({ TableName: 'MyTable' });
+    const provider = makeProvider(col);
+    const result = await provider.describeContinuousBackups({ TableName: 'MyTable' });
+    expect(result.ContinuousBackupsDescription.ContinuousBackupsStatus).toBe('ENABLED');
+  });
+
+  it('returns DISABLED PointInTimeRecoveryStatus when table exists', async () => {
+    const col = makeCollectionMock({ TableName: 'MyTable' });
+    const provider = makeProvider(col);
+    const result = await provider.describeContinuousBackups({ TableName: 'MyTable' });
+    expect(result.ContinuousBackupsDescription.PointInTimeRecoveryDescription.PointInTimeRecoveryStatus).toBe('DISABLED');
+  });
+
+  it('queries _tables by table name with _id projection', async () => {
+    const col = makeCollectionMock({ TableName: 'MyTable' });
+    const provider = makeProvider(col);
+    await provider.describeContinuousBackups({ TableName: 'MyTable' });
+    expect(col.findOne).toHaveBeenCalledWith({ TableName: 'MyTable' }, { projection: { _id: 0 } });
+  });
+
+  it('throws ResourceNotFoundException when table does not exist', async () => {
+    const col = makeCollectionMock(null);
+    const provider = makeProvider(col);
+    let caught: HttpException | undefined;
+    try {
+      await provider.describeContinuousBackups({ TableName: 'Missing' });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    const response = caught!.getResponse() as Record<string, unknown>;
+    expect(response['__type']).toBe('ResourceNotFoundException');
+    expect(response['message']).toContain('Missing');
+  });
+
+  it('throws ValidationException for missing TableName', async () => {
+    const col = makeCollectionMock(null);
+    const provider = makeProvider(col);
+    let caught: HttpException | undefined;
+    try {
+      await provider.describeContinuousBackups({});
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    const response = caught!.getResponse() as Record<string, unknown>;
+    expect(response['__type']).toBe('ValidationException');
+  });
+
+  it('returns stored PointInTimeRecoveryStatus when present in the table document', async () => {
+    const col = makeCollectionMock({ TableName: 'MyTable', PointInTimeRecoveryStatus: 'ENABLED' });
+    const provider = makeProvider(col);
+    const result = await provider.describeContinuousBackups({ TableName: 'MyTable' });
+    expect(result.ContinuousBackupsDescription.PointInTimeRecoveryDescription.PointInTimeRecoveryStatus).toBe('ENABLED');
+  });
+});
+
+describe('DynamodbProvider.updateContinuousBackups', () => {
+  const validBody = {
+    TableName: 'MyTable',
+    PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+  };
+
+  it('calls updateOne with ENABLED when PointInTimeRecoveryEnabled is true', async () => {
+    const col = makeCollectionMock({ TableName: 'MyTable' });
+    const provider = makeProvider(col);
+    await provider.updateContinuousBackups(validBody);
+    expect(col.updateOne).toHaveBeenCalledWith(
+      { TableName: 'MyTable' },
+      { $set: { PointInTimeRecoveryStatus: 'ENABLED' } },
+    );
+  });
+
+  it('calls updateOne with DISABLED when PointInTimeRecoveryEnabled is false', async () => {
+    const col = makeCollectionMock({ TableName: 'MyTable' });
+    const provider = makeProvider(col);
+    await provider.updateContinuousBackups({ ...validBody, PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: false } });
+    expect(col.updateOne).toHaveBeenCalledWith(
+      { TableName: 'MyTable' },
+      { $set: { PointInTimeRecoveryStatus: 'DISABLED' } },
+    );
+  });
+
+  it('returns PointInTimeRecoveryStatus ENABLED in response when enabled', async () => {
+    const col = makeCollectionMock({ TableName: 'MyTable' });
+    const provider = makeProvider(col);
+    const result = await provider.updateContinuousBackups(validBody);
+    expect(result.ContinuousBackupsDescription.PointInTimeRecoveryDescription.PointInTimeRecoveryStatus).toBe('ENABLED');
+  });
+
+  it('returns PointInTimeRecoveryStatus DISABLED in response when disabled', async () => {
+    const col = makeCollectionMock({ TableName: 'MyTable' });
+    const provider = makeProvider(col);
+    const result = await provider.updateContinuousBackups({ ...validBody, PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: false } });
+    expect(result.ContinuousBackupsDescription.PointInTimeRecoveryDescription.PointInTimeRecoveryStatus).toBe('DISABLED');
+  });
+
+  it('returns ContinuousBackupsStatus ENABLED', async () => {
+    const col = makeCollectionMock({ TableName: 'MyTable' });
+    const provider = makeProvider(col);
+    const result = await provider.updateContinuousBackups(validBody);
+    expect(result.ContinuousBackupsDescription.ContinuousBackupsStatus).toBe('ENABLED');
+  });
+
+  it('throws ResourceNotFoundException when table does not exist', async () => {
+    const col = makeCollectionMock(null);
+    const provider = makeProvider(col);
+    let caught: HttpException | undefined;
+    try {
+      await provider.updateContinuousBackups({ ...validBody, TableName: 'Missing' });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    const response = caught!.getResponse() as Record<string, unknown>;
+    expect(response['__type']).toBe('ResourceNotFoundException');
+    expect(response['message']).toContain('Missing');
+  });
+
+  it('throws ValidationException for missing TableName', async () => {
+    const col = makeCollectionMock(null);
+    const provider = makeProvider(col);
+    let caught: HttpException | undefined;
+    try {
+      await provider.updateContinuousBackups({ PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true } });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    const response = caught!.getResponse() as Record<string, unknown>;
+    expect(response['__type']).toBe('ValidationException');
+  });
+
+  it('throws ValidationException for missing PointInTimeRecoverySpecification', async () => {
+    const col = makeCollectionMock(null);
+    const provider = makeProvider(col);
+    let caught: HttpException | undefined;
+    try {
+      await provider.updateContinuousBackups({ TableName: 'MyTable' });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    const response = caught!.getResponse() as Record<string, unknown>;
+    expect(response['__type']).toBe('ValidationException');
+  });
+});
+
 describe('DynamodbProvider.scan', () => {
   const storedItems = [
     { pk: 'user-1', status: 'active', age: 25 },
@@ -943,6 +1139,112 @@ describe('DynamodbProvider.query', () => {
     let caught: HttpException | undefined;
     try {
       await provider.query({ TableName: 'MyTable' });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    expect((caught!.getResponse() as Record<string, unknown>)['__type']).toBe('ValidationException');
+  });
+});
+
+function makeProviderWithNamedCollections(
+  tableMap: Record<string, Record<string, unknown> | null>,
+  itemColMap: Record<string, ReturnType<typeof makeItemCollectionMock>>,
+): DynamodbProvider {
+  const config = new ConfigService();
+  const provider = new DynamodbProvider(config);
+  const tablesCol = {
+    findOne: vi.fn().mockImplementation(({ TableName }: { TableName: string }) =>
+      Promise.resolve(tableMap[TableName] ?? null),
+    ),
+    insertOne: vi.fn().mockResolvedValue({}),
+    find: vi.fn().mockReturnValue(makeCursorMock([])),
+  };
+  const db = {
+    collection: vi.fn().mockImplementation((name: string) =>
+      name === '_tables' ? tablesCol : (itemColMap[name] ?? makeItemCollectionMock({})),
+    ),
+    createCollection: vi.fn().mockResolvedValue(undefined),
+    dropCollection: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Db;
+  (provider as unknown as Record<string, unknown>)['db'] = db;
+  return provider;
+}
+
+describe('DynamodbProvider.batchWriteItem', () => {
+  const putRequest = { PutRequest: { Item: { pk: { S: 'u1' }, name: { S: 'Alice' } } } };
+  const deleteRequest = { DeleteRequest: { Key: { pk: { S: 'u2' } } } };
+
+  it('calls replaceOne with upsert for a PutRequest', async () => {
+    const itemCol = makeItemCollectionMock({});
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    await provider.batchWriteItem({ RequestItems: { MyTable: [putRequest] } });
+    expect(itemCol.replaceOne).toHaveBeenCalledOnce();
+    const [filter, doc, opts] = vi.mocked(itemCol.replaceOne).mock.calls[0]!;
+    expect(filter).toMatchObject({ pk: 'u1' });
+    expect(doc).toEqual({ pk: 'u1', name: 'Alice' });
+    expect(opts).toEqual({ upsert: true });
+  });
+
+  it('calls deleteOne with the key filter for a DeleteRequest', async () => {
+    const itemCol = makeItemCollectionMock({});
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    await provider.batchWriteItem({ RequestItems: { MyTable: [deleteRequest] } });
+    expect(itemCol.deleteOne).toHaveBeenCalledOnce();
+    const [filter] = vi.mocked(itemCol.deleteOne).mock.calls[0]!;
+    expect(filter).toMatchObject({ pk: 'u2' });
+  });
+
+  it('handles mixed PutRequest and DeleteRequest in same batch', async () => {
+    const itemCol = makeItemCollectionMock({});
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    await provider.batchWriteItem({ RequestItems: { MyTable: [putRequest, deleteRequest] } });
+    expect(itemCol.replaceOne).toHaveBeenCalledOnce();
+    expect(itemCol.deleteOne).toHaveBeenCalledOnce();
+  });
+
+  it('handles requests across multiple tables', async () => {
+    const tableDoc2 = { ...tableDoc, TableName: 'OtherTable' };
+    const itemCol1 = makeItemCollectionMock({});
+    const itemCol2 = makeItemCollectionMock({});
+    const provider = makeProviderWithNamedCollections(
+      { MyTable: tableDoc, OtherTable: tableDoc2 },
+      { MyTable: itemCol1, OtherTable: itemCol2 },
+    );
+    await provider.batchWriteItem({
+      RequestItems: {
+        MyTable: [putRequest],
+        OtherTable: [deleteRequest],
+      },
+    });
+    expect(itemCol1.replaceOne).toHaveBeenCalledOnce();
+    expect(itemCol2.deleteOne).toHaveBeenCalledOnce();
+  });
+
+  it('returns UnprocessedItems as empty object', async () => {
+    const itemCol = makeItemCollectionMock({});
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    const result = await provider.batchWriteItem({ RequestItems: { MyTable: [putRequest] } });
+    expect(result).toEqual({ UnprocessedItems: {} });
+  });
+
+  it('throws ResourceNotFoundException when table does not exist', async () => {
+    const itemCol = makeItemCollectionMock({});
+    const provider = makeProviderWithItemCollections(null, itemCol);
+    let caught: HttpException | undefined;
+    try {
+      await provider.batchWriteItem({ RequestItems: { Missing: [putRequest] } });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    expect((caught!.getResponse() as Record<string, unknown>)['__type']).toBe('ResourceNotFoundException');
+  });
+
+  it('throws ValidationException when RequestItems is missing', async () => {
+    const itemCol = makeItemCollectionMock({});
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    let caught: HttpException | undefined;
+    try {
+      await provider.batchWriteItem({});
     } catch (e) {
       caught = e as HttpException;
     }

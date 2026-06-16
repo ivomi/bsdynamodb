@@ -1,10 +1,11 @@
 import type { OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
-import type { BillingMode, TableClass, TableDescription } from '@aws-sdk/client-dynamodb';
+import type { BillingMode, TableClass, TableDescription, TimeToLiveDescription } from '@aws-sdk/client-dynamodb';
 import { randomUUID } from 'crypto';
 import { Db, MongoClient } from 'mongodb';
 import { ConfigService } from './config.service.js';
 import type {
+  BatchWriteItemInput,
   CreateTableInput,
   DeleteItemInput,
   GetItemInput,
@@ -12,6 +13,7 @@ import type {
   PutItemInput,
   QueryInput,
   ScanInput,
+  UpdateContinuousBackupsInput,
   UpdateItemInput,
   UpdateTableInput,
 } from './dynamodb.types.js';
@@ -34,6 +36,10 @@ import { validateQuery } from './validation-request/query.js';
 import { validateScan } from './validation-request/scan.js';
 import { validateUpdateItem } from './validation-request/update-item.js';
 import { validateUpdateTable } from './validation-request/update-table.js';
+import { validateDescribeTimeToLive } from './validation-request/describe-time-to-live.js';
+import { validateBatchWriteItem } from './validation-request/batch-write-item.js';
+import { validateDescribeContinuousBackups } from './validation-request/describe-continuous-backups.js';
+import { validateUpdateContinuousBackups } from './validation-request/update-continuous-backups.js';
 
 @Injectable()
 export class DynamodbProvider implements OnModuleInit, OnModuleDestroy {
@@ -396,6 +402,78 @@ export class DynamodbProvider implements OnModuleInit, OnModuleDestroy {
     return { Table: doc as unknown as TableDescription };
   }
 
+  async describeTimeToLive(body: Record<string, unknown>): Promise<{ TimeToLiveDescription: TimeToLiveDescription }> {
+    const tableName = validateDescribeTimeToLive(body);
+    const doc = await this.db
+      .collection('_tables')
+      .findOne({ TableName: tableName }, { projection: { _id: 0 } });
+    if (doc == null) {
+      throw new HttpException(
+        { __type: 'ResourceNotFoundException', message: `Table not found: ${tableName}` },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return { TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' } };
+  }
+
+  async describeContinuousBackups(body: Record<string, unknown>): Promise<{
+    ContinuousBackupsDescription: {
+      ContinuousBackupsStatus: string;
+      PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: string };
+    };
+  }> {
+    const tableName = validateDescribeContinuousBackups(body);
+    const doc = await this.db
+      .collection('_tables')
+      .findOne({ TableName: tableName }, { projection: { _id: 0 } });
+    if (doc == null) {
+      throw new HttpException(
+        { __type: 'ResourceNotFoundException', message: `Table not found: ${tableName}` },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const pitrStatus = typeof doc['PointInTimeRecoveryStatus'] === 'string'
+      ? doc['PointInTimeRecoveryStatus']
+      : 'DISABLED';
+    return {
+      ContinuousBackupsDescription: {
+        ContinuousBackupsStatus: 'ENABLED',
+        PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: pitrStatus },
+      },
+    };
+  }
+
+  async updateContinuousBackups(body: Record<string, unknown>): Promise<{
+    ContinuousBackupsDescription: {
+      ContinuousBackupsStatus: string;
+      PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: string };
+    };
+  }> {
+    const tableName = validateUpdateContinuousBackups(body);
+    const input = body as unknown as UpdateContinuousBackupsInput;
+    const doc = await this.db
+      .collection('_tables')
+      .findOne({ TableName: tableName }, { projection: { _id: 0 } });
+    if (doc == null) {
+      throw new HttpException(
+        { __type: 'ResourceNotFoundException', message: `Table not found: ${tableName}` },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const pitrStatus = input.PointInTimeRecoverySpecification.PointInTimeRecoveryEnabled
+      ? 'ENABLED'
+      : 'DISABLED';
+    await this.db
+      .collection('_tables')
+      .updateOne({ TableName: tableName }, { $set: { PointInTimeRecoveryStatus: pitrStatus } });
+    return {
+      ContinuousBackupsDescription: {
+        ContinuousBackupsStatus: 'ENABLED',
+        PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: pitrStatus },
+      },
+    };
+  }
+
   async scan(body: Record<string, unknown>) {
     const tableName = validateScan(body);
     const tableDoc = await this.db.collection('_tables').findOne({ TableName: tableName });
@@ -474,6 +552,37 @@ export class DynamodbProvider implements OnModuleInit, OnModuleDestroy {
     }
 
     return result;
+  }
+
+  async batchWriteItem(body: Record<string, unknown>) {
+    validateBatchWriteItem(body);
+    const input = body as unknown as BatchWriteItemInput;
+
+    for (const [tableName, requests] of Object.entries(input.RequestItems)) {
+      const tableDoc = await this.db.collection('_tables').findOne({ TableName: tableName });
+      if (tableDoc == null) {
+        throw new HttpException(
+          { __type: 'ResourceNotFoundException', message: `Table not found: ${tableName}` },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      const keySchema = tableDoc['KeySchema'] as Array<{ AttributeName: string }>;
+
+      for (const request of requests) {
+        if (request.PutRequest != null) {
+          const item = request.PutRequest.Item as Record<string, unknown>;
+          const filter = buildKeyFilter(keySchema, item);
+          const stored = unmarshalItem(item);
+          await this.db.collection(tableName).replaceOne(filter, stored, { upsert: true });
+        } else if (request.DeleteRequest != null) {
+          const key = request.DeleteRequest.Key as Record<string, unknown>;
+          const filter = buildKeyFilter(keySchema, key);
+          await this.db.collection(tableName).deleteOne(filter);
+        }
+      }
+    }
+
+    return { UnprocessedItems: {} };
   }
 
   async query(body: Record<string, unknown>) {

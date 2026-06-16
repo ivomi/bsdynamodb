@@ -13,6 +13,10 @@ function makeProvider(): DynamodbProvider {
     putItem: vi.fn().mockResolvedValue({}),
     updateItem: vi.fn().mockResolvedValue({}),
     deleteItem: vi.fn().mockResolvedValue({}),
+    describeTimeToLive: vi.fn().mockResolvedValue({ TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' } }),
+    describeContinuousBackups: vi.fn().mockResolvedValue({ ContinuousBackupsDescription: { ContinuousBackupsStatus: 'ENABLED', PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: 'DISABLED' } } }),
+    updateContinuousBackups: vi.fn().mockResolvedValue({ ContinuousBackupsDescription: { ContinuousBackupsStatus: 'ENABLED', PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: 'ENABLED' } } }),
+    batchWriteItem: vi.fn().mockResolvedValue({ UnprocessedItems: {} }),
   } as unknown as DynamodbProvider;
 }
 
@@ -160,5 +164,65 @@ describe('DynamodbController', () => {
     const controller = new DynamodbController(provider);
     const result = await controller.handle('DynamoDB_20120810.DescribeTable', { TableName: 'Test' });
     expect(result).toEqual({ Table: { name: 'Test' } });
+  });
+
+  it('routes DescribeTimeToLive target to provider.describeTimeToLive', async () => {
+    const provider = makeProvider();
+    const controller = new DynamodbController(provider);
+    const body = { TableName: 'Test' };
+    await controller.handle('DynamoDB_20120810.DescribeTimeToLive', body);
+    expect(provider.describeTimeToLive).toHaveBeenCalledWith(body);
+  });
+
+  it('returns the result of provider.describeTimeToLive', async () => {
+    const provider = makeProvider();
+    const controller = new DynamodbController(provider);
+    const result = await controller.handle('DynamoDB_20120810.DescribeTimeToLive', { TableName: 'Test' });
+    expect(result).toEqual({ TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' } });
+  });
+
+  it('routes DescribeContinuousBackups target to provider.describeContinuousBackups', async () => {
+    const provider = makeProvider();
+    const controller = new DynamodbController(provider);
+    const body = { TableName: 'Test' };
+    await controller.handle('DynamoDB_20120810.DescribeContinuousBackups', body);
+    expect(provider.describeContinuousBackups).toHaveBeenCalledWith(body);
+  });
+
+  it('returns the result of provider.describeContinuousBackups', async () => {
+    const provider = makeProvider();
+    const controller = new DynamodbController(provider);
+    const result = await controller.handle('DynamoDB_20120810.DescribeContinuousBackups', { TableName: 'Test' });
+    expect(result).toEqual({ ContinuousBackupsDescription: { ContinuousBackupsStatus: 'ENABLED', PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: 'DISABLED' } } });
+  });
+
+  it('routes UpdateContinuousBackups target to provider.updateContinuousBackups', async () => {
+    const provider = makeProvider();
+    const controller = new DynamodbController(provider);
+    const body = { TableName: 'Test', PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true } };
+    await controller.handle('DynamoDB_20120810.UpdateContinuousBackups', body);
+    expect(provider.updateContinuousBackups).toHaveBeenCalledWith(body);
+  });
+
+  it('returns the result of provider.updateContinuousBackups', async () => {
+    const provider = makeProvider();
+    const controller = new DynamodbController(provider);
+    const result = await controller.handle('DynamoDB_20120810.UpdateContinuousBackups', { TableName: 'Test', PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true } });
+    expect(result).toEqual({ ContinuousBackupsDescription: { ContinuousBackupsStatus: 'ENABLED', PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: 'ENABLED' } } });
+  });
+
+  it('routes BatchWriteItem target to provider.batchWriteItem', async () => {
+    const provider = makeProvider();
+    const controller = new DynamodbController(provider);
+    const body = { RequestItems: { Test: [{ PutRequest: { Item: { pk: { S: 'u1' } } } }] } };
+    await controller.handle('DynamoDB_20120810.BatchWriteItem', body);
+    expect(provider.batchWriteItem).toHaveBeenCalledWith(body);
+  });
+
+  it('returns the result of provider.batchWriteItem', async () => {
+    const provider = makeProvider();
+    const controller = new DynamodbController(provider);
+    const result = await controller.handle('DynamoDB_20120810.BatchWriteItem', { RequestItems: {} });
+    expect(result).toEqual({ UnprocessedItems: {} });
   });
 });
