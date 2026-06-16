@@ -59,8 +59,9 @@ Thumbs.db
 # Docker
 
 # MongoDB data
-mongodb_data/
+mongodb_data/*
 !mongodb_data/.gitkeep
 
 # Import data files (keep directory, ignore contents)
-import/*.json
+import/*
+!import/.gitkeep

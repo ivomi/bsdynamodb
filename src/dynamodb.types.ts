@@ -134,6 +134,16 @@ export interface BatchWriteItemInput {
   ReturnItemCollectionMetrics?: 'SIZE' | 'NONE';
 }
 
+export interface BatchGetItemInput {
+  RequestItems: Record<string, {
+    Keys: Item[];
+    ProjectionExpression?: string;
+    ExpressionAttributeNames?: Record<string, string>;
+    ConsistentRead?: boolean;
+  }>;
+  ReturnConsumedCapacity?: 'INDEXES' | 'TOTAL' | 'NONE';
+}
+
 export interface DescribeContinuousBackupsInput {
   TableName: string;
 }

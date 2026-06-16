@@ -43,6 +43,8 @@ export class DynamodbController {
         return this.dynamodbProvider.updateContinuousBackups(body);
       case 'DynamoDB_20120810.BatchWriteItem':
         return this.dynamodbProvider.batchWriteItem(body);
+      case 'DynamoDB_20120810.BatchGetItem':
+        return this.dynamodbProvider.batchGetItem(body);
       default:
         throw new HttpException(
           { __type: 'UnknownOperationException', message: `Unknown operation: ${target}` },

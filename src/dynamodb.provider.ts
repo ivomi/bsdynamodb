@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import { Db, MongoClient } from 'mongodb';
 import { ConfigService } from './config.service.js';
 import type {
+  BatchGetItemInput,
   BatchWriteItemInput,
   CreateTableInput,
   DeleteItemInput,
@@ -37,6 +38,7 @@ import { validateScan } from './validation-request/scan.js';
 import { validateUpdateItem } from './validation-request/update-item.js';
 import { validateUpdateTable } from './validation-request/update-table.js';
 import { validateDescribeTimeToLive } from './validation-request/describe-time-to-live.js';
+import { validateBatchGetItem } from './validation-request/batch-get-item.js';
 import { validateBatchWriteItem } from './validation-request/batch-write-item.js';
 import { validateDescribeContinuousBackups } from './validation-request/describe-continuous-backups.js';
 import { validateUpdateContinuousBackups } from './validation-request/update-continuous-backups.js';
@@ -87,7 +89,9 @@ export class DynamodbProvider implements OnModuleInit, OnModuleDestroy {
       };
     }
     if (input.GlobalSecondaryIndexes != null) {
-      tableDoc.GlobalSecondaryIndexes = input.GlobalSecondaryIndexes as TableDescription['GlobalSecondaryIndexes'];
+      tableDoc.GlobalSecondaryIndexes = (input.GlobalSecondaryIndexes as Array<Record<string, unknown>>).map(
+        (gsi) => ({ ...gsi, IndexStatus: 'ACTIVE' }),
+      ) as TableDescription['GlobalSecondaryIndexes'];
     }
     if (input.LocalSecondaryIndexes != null) {
       tableDoc.LocalSecondaryIndexes = input.LocalSecondaryIndexes as TableDescription['LocalSecondaryIndexes'];
@@ -170,7 +174,7 @@ export class DynamodbProvider implements OnModuleInit, OnModuleDestroy {
     if (input.GlobalSecondaryIndexUpdates != null) {
       for (const gsiUpdate of input.GlobalSecondaryIndexUpdates as GlobalSecondaryIndexUpdate[]) {
         if (gsiUpdate.Create != null) {
-          gsiList = [...gsiList, gsiUpdate.Create];
+          gsiList = [...gsiList, { ...gsiUpdate.Create, IndexStatus: 'ACTIVE' }];
         } else if (gsiUpdate.Delete != null) {
           const indexName = gsiUpdate.Delete.IndexName;
           gsiList = gsiList.filter(
@@ -583,6 +587,44 @@ export class DynamodbProvider implements OnModuleInit, OnModuleDestroy {
     }
 
     return { UnprocessedItems: {} };
+  }
+
+  async batchGetItem(body: Record<string, unknown>) {
+    validateBatchGetItem(body);
+    const input = body as unknown as BatchGetItemInput;
+    const responses: Record<string, Record<string, unknown>[]> = {};
+
+    for (const [tableName, tableRequest] of Object.entries(input.RequestItems)) {
+      const tableDoc = await this.db.collection('_tables').findOne({ TableName: tableName });
+      if (tableDoc == null) {
+        throw new HttpException(
+          { __type: 'ResourceNotFoundException', message: `Table not found: ${tableName}` },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      const keySchema = tableDoc['KeySchema'] as Array<{ AttributeName: string }>;
+      const names = tableRequest.ExpressionAttributeNames ?? {};
+      const items: Record<string, unknown>[] = [];
+
+      for (const key of tableRequest.Keys) {
+        const filter = buildKeyFilter(keySchema, key as Record<string, unknown>);
+        const doc = await this.db.collection(tableName).findOne(filter);
+        if (doc != null) {
+          let item = marshalItem(stripId(doc));
+          if (tableRequest.ProjectionExpression != null) {
+            const projectedAttrs = tableRequest.ProjectionExpression.split(',').map((p) => {
+              const part = p.trim().split('.')[0]!;
+              return names[part] ?? part;
+            });
+            item = Object.fromEntries(Object.entries(item).filter(([k]) => projectedAttrs.includes(k)));
+          }
+          items.push(item);
+        }
+      }
+      responses[tableName] = items;
+    }
+
+    return { Responses: responses, UnprocessedKeys: {} };
   }
 
   async query(body: Record<string, unknown>) {

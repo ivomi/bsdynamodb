@@ -104,10 +104,13 @@ describe('DynamodbProvider.createTable', () => {
     expect(result.TableDescription['ProvisionedThroughput']).toBeUndefined();
   });
 
-  it('includes GlobalSecondaryIndexes when provided', async () => {
-    const gsi = [{ IndexName: 'gsi1' }];
+  it('includes GlobalSecondaryIndexes with IndexStatus ACTIVE when provided', async () => {
+    const gsi = [{ IndexName: 'gsi1', KeySchema: [{ AttributeName: 'sk', KeyType: 'HASH' }], Projection: { ProjectionType: 'ALL' } }];
     const result = await provider.createTable({ ...minimalInput, GlobalSecondaryIndexes: gsi });
-    expect(result.TableDescription['GlobalSecondaryIndexes']).toEqual(gsi);
+    const stored = result.TableDescription['GlobalSecondaryIndexes'] as Record<string, unknown>[];
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!['IndexName']).toBe('gsi1');
+    expect(stored[0]!['IndexStatus']).toBe('ACTIVE');
   });
 
   it('omits GlobalSecondaryIndexes when not provided', async () => {
@@ -270,6 +273,130 @@ const tableDoc = {
   TableId: 'table-id-1',
   BillingMode: 'PROVISIONED',
 };
+
+describe('DynamodbProvider.updateTable', () => {
+  const existingTableDoc = {
+    TableName: 'MyTable',
+    KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+    TableStatus: 'ACTIVE',
+  };
+
+  function makeUpdateTableProvider(
+    initialDoc: Record<string, unknown> | null,
+    updatedDoc: Record<string, unknown>,
+  ) {
+    const config = new ConfigService();
+    const provider = new DynamodbProvider(config);
+    const col = {
+      findOne: vi.fn()
+        .mockResolvedValueOnce(initialDoc)
+        .mockResolvedValueOnce(updatedDoc),
+      updateOne: vi.fn().mockResolvedValue({ modifiedCount: 1 }),
+      insertOne: vi.fn(),
+      find: vi.fn().mockReturnValue(makeCursorMock([])),
+    };
+    const db = {
+      collection: vi.fn().mockReturnValue(col),
+      createCollection: vi.fn(),
+    } as unknown as Db;
+    (provider as unknown as Record<string, unknown>)['db'] = db;
+    return { provider, col };
+  }
+
+  it('adds IndexStatus ACTIVE to a newly created GSI', async () => {
+    const gsiCreate = {
+      IndexName: 'gsi1',
+      KeySchema: [{ AttributeName: 'sk', KeyType: 'HASH' }],
+      Projection: { ProjectionType: 'ALL' },
+    };
+    const updatedDoc = {
+      ...existingTableDoc,
+      GlobalSecondaryIndexes: [{ ...gsiCreate, IndexStatus: 'ACTIVE' }],
+    };
+    const { provider, col } = makeUpdateTableProvider(existingTableDoc, updatedDoc);
+    const result = await provider.updateTable({
+      TableName: 'MyTable',
+      GlobalSecondaryIndexUpdates: [{ Create: gsiCreate }],
+    });
+    const setArg = (vi.mocked(col.updateOne).mock.calls[0]![1] as Record<string, unknown>)['$set'] as Record<string, unknown>;
+    const gsiList = setArg['GlobalSecondaryIndexes'] as Record<string, unknown>[];
+    expect(gsiList[0]!['IndexStatus']).toBe('ACTIVE');
+    expect((result as Record<string, unknown>)['TableDescription']).toBe(updatedDoc);
+  });
+
+  it('removes the GSI when Delete action is specified', async () => {
+    const docWithGsi = {
+      ...existingTableDoc,
+      GlobalSecondaryIndexes: [{ IndexName: 'gsi1', IndexStatus: 'ACTIVE' }],
+    };
+    const updatedDoc = { ...existingTableDoc, GlobalSecondaryIndexes: [] };
+    const { provider, col } = makeUpdateTableProvider(docWithGsi, updatedDoc);
+    await provider.updateTable({
+      TableName: 'MyTable',
+      GlobalSecondaryIndexUpdates: [{ Delete: { IndexName: 'gsi1' } }],
+    });
+    const setArg = (vi.mocked(col.updateOne).mock.calls[0]![1] as Record<string, unknown>)['$set'] as Record<string, unknown>;
+    const gsiList = setArg['GlobalSecondaryIndexes'] as unknown[];
+    expect(gsiList).toHaveLength(0);
+  });
+
+  it('updates ProvisionedThroughput on an existing GSI', async () => {
+    const docWithGsi = {
+      ...existingTableDoc,
+      GlobalSecondaryIndexes: [{ IndexName: 'gsi1', IndexStatus: 'ACTIVE', ProvisionedThroughput: { ReadCapacityUnits: 1, WriteCapacityUnits: 1 } }],
+    };
+    const updatedDoc = { ...docWithGsi };
+    const { provider, col } = makeUpdateTableProvider(docWithGsi, updatedDoc);
+    await provider.updateTable({
+      TableName: 'MyTable',
+      GlobalSecondaryIndexUpdates: [{ Update: { IndexName: 'gsi1', ProvisionedThroughput: { ReadCapacityUnits: 10, WriteCapacityUnits: 10 } } }],
+    });
+    const setArg = (vi.mocked(col.updateOne).mock.calls[0]![1] as Record<string, unknown>)['$set'] as Record<string, unknown>;
+    const gsiList = setArg['GlobalSecondaryIndexes'] as Record<string, unknown>[];
+    expect((gsiList[0]!['ProvisionedThroughput'] as Record<string, unknown>)['ReadCapacityUnits']).toBe(10);
+  });
+
+  it('updates BillingMode when provided', async () => {
+    const updatedDoc = { ...existingTableDoc, BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' } };
+    const { provider, col } = makeUpdateTableProvider(existingTableDoc, updatedDoc);
+    await provider.updateTable({ TableName: 'MyTable', BillingMode: 'PAY_PER_REQUEST' });
+    const setArg = (vi.mocked(col.updateOne).mock.calls[0]![1] as Record<string, unknown>)['$set'] as Record<string, unknown>;
+    expect(setArg['BillingModeSummary.BillingMode']).toBe('PAY_PER_REQUEST');
+  });
+
+  it('throws ResourceNotFoundException when table does not exist', async () => {
+    const { provider } = makeUpdateTableProvider(null, {});
+    let caught: HttpException | undefined;
+    try {
+      await provider.updateTable({ TableName: 'Missing', BillingMode: 'PAY_PER_REQUEST' });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    expect((caught!.getResponse() as Record<string, unknown>)['__type']).toBe('ResourceNotFoundException');
+  });
+
+  it('throws ValidationException when TableName is missing', async () => {
+    const { provider } = makeUpdateTableProvider(existingTableDoc, {});
+    let caught: HttpException | undefined;
+    try {
+      await provider.updateTable({ BillingMode: 'PAY_PER_REQUEST' });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    expect((caught!.getResponse() as Record<string, unknown>)['__type']).toBe('ValidationException');
+  });
+
+  it('throws ValidationException when nothing to update', async () => {
+    const { provider } = makeUpdateTableProvider(existingTableDoc, {});
+    let caught: HttpException | undefined;
+    try {
+      await provider.updateTable({ TableName: 'MyTable' });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    expect((caught!.getResponse() as Record<string, unknown>)['__type']).toBe('ValidationException');
+  });
+});
 
 describe('DynamodbProvider.getItem', () => {
   const key = { pk: { S: 'user-1' } };
@@ -1169,6 +1296,102 @@ function makeProviderWithNamedCollections(
   (provider as unknown as Record<string, unknown>)['db'] = db;
   return provider;
 }
+
+describe('DynamodbProvider.batchGetItem', () => {
+  it('returns found items marshalled to DynamoDB format', async () => {
+    const itemCol = makeItemCollectionMock({ findOneResult: { pk: 'u1', name: 'Alice' } });
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    const result = await provider.batchGetItem({
+      RequestItems: { MyTable: { Keys: [{ pk: { S: 'u1' } }] } },
+    });
+    expect((result.Responses as Record<string, unknown[]>)['MyTable']).toHaveLength(1);
+    expect(((result.Responses as Record<string, unknown[]>)['MyTable']![0] as Record<string, unknown>)['pk']).toEqual({ S: 'u1' });
+    expect(((result.Responses as Record<string, unknown[]>)['MyTable']![0] as Record<string, unknown>)['name']).toEqual({ S: 'Alice' });
+  });
+
+  it('skips missing keys when item is not found', async () => {
+    const itemCol = makeItemCollectionMock({ findOneResult: null });
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    const result = await provider.batchGetItem({
+      RequestItems: { MyTable: { Keys: [{ pk: { S: 'u1' } }] } },
+    });
+    expect((result.Responses as Record<string, unknown[]>)['MyTable']).toHaveLength(0);
+  });
+
+  it('calls findOne for each key and returns all found items', async () => {
+    const itemCol = makeItemCollectionMock({ findOneResult: { pk: 'u1', name: 'Alice' } });
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    await provider.batchGetItem({
+      RequestItems: { MyTable: { Keys: [{ pk: { S: 'u1' } }, { pk: { S: 'u2' } }] } },
+    });
+    expect(itemCol.findOne).toHaveBeenCalledTimes(2);
+  });
+
+  it('handles requests across multiple tables', async () => {
+    const tableDoc2 = { ...tableDoc, TableName: 'OtherTable' };
+    const itemCol1 = makeItemCollectionMock({ findOneResult: { pk: 'u1' } });
+    const itemCol2 = makeItemCollectionMock({ findOneResult: { id: 'x1' } });
+    const provider = makeProviderWithNamedCollections(
+      { MyTable: tableDoc, OtherTable: tableDoc2 },
+      { MyTable: itemCol1, OtherTable: itemCol2 },
+    );
+    const result = await provider.batchGetItem({
+      RequestItems: {
+        MyTable: { Keys: [{ pk: { S: 'u1' } }] },
+        OtherTable: { Keys: [{ pk: { S: 'x1' } }] },
+      },
+    });
+    expect(itemCol1.findOne).toHaveBeenCalledOnce();
+    expect(itemCol2.findOne).toHaveBeenCalledOnce();
+    expect((result.Responses as Record<string, unknown[]>)['MyTable']).toHaveLength(1);
+    expect((result.Responses as Record<string, unknown[]>)['OtherTable']).toHaveLength(1);
+  });
+
+  it('applies ProjectionExpression to returned items', async () => {
+    const itemCol = makeItemCollectionMock({ findOneResult: { pk: 'u1', name: 'Alice', age: 30 } });
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    const result = await provider.batchGetItem({
+      RequestItems: { MyTable: { Keys: [{ pk: { S: 'u1' } }], ProjectionExpression: 'pk' } },
+    });
+    const item = (result.Responses as Record<string, unknown[]>)['MyTable']![0] as Record<string, unknown>;
+    expect(item).toHaveProperty('pk');
+    expect(item).not.toHaveProperty('name');
+    expect(item).not.toHaveProperty('age');
+  });
+
+  it('returns UnprocessedKeys as empty object', async () => {
+    const itemCol = makeItemCollectionMock({ findOneResult: { pk: 'u1' } });
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    const result = await provider.batchGetItem({
+      RequestItems: { MyTable: { Keys: [{ pk: { S: 'u1' } }] } },
+    });
+    expect(result.UnprocessedKeys).toEqual({});
+  });
+
+  it('throws ResourceNotFoundException when table does not exist', async () => {
+    const itemCol = makeItemCollectionMock({});
+    const provider = makeProviderWithItemCollections(null, itemCol);
+    let caught: HttpException | undefined;
+    try {
+      await provider.batchGetItem({ RequestItems: { Missing: { Keys: [{ pk: { S: 'u1' } }] } } });
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    expect((caught!.getResponse() as Record<string, unknown>)['__type']).toBe('ResourceNotFoundException');
+  });
+
+  it('throws ValidationException when RequestItems is missing', async () => {
+    const itemCol = makeItemCollectionMock({});
+    const provider = makeProviderWithItemCollections(tableDoc, itemCol);
+    let caught: HttpException | undefined;
+    try {
+      await provider.batchGetItem({});
+    } catch (e) {
+      caught = e as HttpException;
+    }
+    expect((caught!.getResponse() as Record<string, unknown>)['__type']).toBe('ValidationException');
+  });
+});
 
 describe('DynamodbProvider.batchWriteItem', () => {
   const putRequest = { PutRequest: { Item: { pk: { S: 'u1' }, name: { S: 'Alice' } } } };
