@@ -1,7 +1,18 @@
-import { Body, Controller, Get, Headers, HttpException, HttpStatus, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  HttpException,
+  HttpStatus,
+  Post,
+  UseInterceptors,
+} from '@nestjs/common';
 import { DynamodbProvider } from './dynamodb.provider.js';
+import { LoggingInterceptor } from './logging.interceptor.js';
 
 @Controller()
+@UseInterceptors(LoggingInterceptor)
 export class DynamodbController {
   constructor(private readonly dynamodbProvider: DynamodbProvider) {}
 
