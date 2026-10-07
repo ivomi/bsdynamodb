@@ -36,6 +36,6 @@ until mongosh --quiet --eval "db.adminCommand('ping')" > /dev/null 2>&1; do
 done
 echo "MongoDB is ready."
 
-run node scripts/import.mjs || shutdown $?
+run node scripts/import.mjs || echo "Warning: import exited with status $?, starting server anyway"
 run node dist/main.js
 shutdown $?

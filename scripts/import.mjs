@@ -55,14 +55,18 @@ async function main() {
 
   try {
     for (const file of files) {
-      await importFile(db, file);
+      try {
+        await importFile(db, file);
+      } catch (err) {
+        console.warn(`⚠ ${file}: import failed, skipping - ${err.message}`);
+      }
     }
   } finally {
     await client.close();
   }
 }
 
+// Import failures must not keep the server from starting, so they are only logged.
 main().catch((err) => {
-  console.error(err);
-  process.exit(1);
+  console.error(`Import failed: ${err.message}`);
 });
