@@ -1,6 +1,6 @@
 {
   "name": "bsdynamodb",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "",
   "license": "ISC",
   "author": "",
@@ -22,7 +22,9 @@
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "import": "node scripts/import.mjs"
+    "import": "node scripts/import.mjs",
+    "docker:build": "docker build -t imis/$npm_package_name:$npm_package_version -t imis/$npm_package_name:latest .",
+    "docker:push": "docker push imis/$npm_package_name:$npm_package_version && docker push imis/$npm_package_name:latest"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.0",
