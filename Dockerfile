@@ -1,26 +1,34 @@
-FROM node:24-alpine AS builder
+FROM node:24-bookworm-slim AS builder
 WORKDIR /app
 COPY .npmrc package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
-RUN npm run build
+RUN npm run build && npm prune --omit=dev && npm cache clean --force
 
-FROM mongo:8.0 AS production
+# Collects mongod and the shared libraries it links against (except glibc and the
+# C++ runtime, which the Ubuntu base provides), so the full mongo image is not needed.
+FROM mongo:8.0 AS mongo
+RUN mkdir -p /out/lib && \
+    ldd /usr/bin/mongod | awk '/=> \// { print $3 }' | \
+      grep -vE '/(libc|libm|libdl|librt|libpthread|libstdc\+\+|libgcc_s)\.so|/ld-linux' | \
+      xargs -r -I{} cp -L {} /out/lib/
+
+FROM ubuntu:noble AS production
 WORKDIR /app
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
-    curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+COPY --from=mongo /usr/bin/mongod /usr/bin/mongod
+COPY --from=mongo /out/lib/ /usr/local/lib/
+RUN ldconfig && mkdir -p /data/db /app/import
 
-COPY .npmrc package.json package-lock.json ./
-RUN npm ci --omit=dev
+# Only the node binary is needed at runtime: no npm, no apt packages.
+COPY --from=builder /usr/local/bin/node /usr/local/bin/node
+
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
+COPY package.json ./
 COPY scripts ./scripts
-COPY entrypoint.sh ./
-RUN chmod +x entrypoint.sh
+COPY --chmod=755 entrypoint.sh ./
 
 VOLUME ["/data/db", "/app/import"]
 
