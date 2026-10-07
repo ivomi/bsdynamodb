@@ -94,9 +94,9 @@ Each file is imported only once per database. Completed imports are recorded in 
 ## Tags
 
 - `latest`: the most recent release
-- `1.0.1`: a specific version (use this or newer; `1.0.0` re-imports seed data on restart)
+- `1.0.2`: a specific version (use `1.0.1` or newer; `1.0.0` re-imports seed data on restart)
 
-Images are built for `linux/amd64`. They are based on `mongo:8.0` with Node.js 24.
+Images are built for `linux/amd64`. They are based on `ubuntu:noble` with `mongod` from `mongo:8.0` and Node.js 24. From `1.0.2` on, the image no longer includes `mongosh` or the MongoDB database tools.
 
 ## Not intended for production
 
