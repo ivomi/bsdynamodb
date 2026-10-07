@@ -55,23 +55,23 @@ volumes:
 
 ## Supported operations
 
-| Tables | Items | Batch | Other |
-|---|---|---|---|
-| CreateTable | PutItem | BatchGetItem | DescribeTimeToLive |
-| DescribeTable | GetItem | BatchWriteItem | DescribeContinuousBackups |
-| UpdateTable | UpdateItem | | UpdateContinuousBackups |
-| DeleteTable | DeleteItem | | |
-| ListTables | Query | | |
-| | Scan | | |
+| Tables        | Items      | Batch          | Other                     |
+| ------------- | ---------- | -------------- | ------------------------- |
+| CreateTable   | PutItem    | BatchGetItem   | DescribeTimeToLive        |
+| DescribeTable | GetItem    | BatchWriteItem | DescribeContinuousBackups |
+| UpdateTable   | UpdateItem |                | UpdateContinuousBackups   |
+| DeleteTable   | DeleteItem |                |                           |
+| ListTables    | Query      |                |                           |
+|               | Scan       |                |                           |
 
 Filter and condition expressions support `=`, `<>`, `<`, `<=`, `>`, `>=`, `BETWEEN`, `IN`, `AND`, `OR`, `NOT` and the functions `attribute_exists`, `attribute_not_exists`, `attribute_type`, `begins_with`, `contains` and `size`. Operations not in this list are not supported.
 
 ## Volumes
 
-| Path | Purpose |
-|---|---|
-| `/data/db` | MongoDB data. Mount a volume here to keep tables and items between restarts. |
-| `/app/import` | Optional seed data. Every `*.json` file here is loaded on startup. |
+| Path          | Purpose                                                                      |
+| ------------- | ---------------------------------------------------------------------------- |
+| `/data/db`    | MongoDB data. Mount a volume here to keep tables and items between restarts. |
+| `/app/import` | Optional seed data. Every `*.json` file here is loaded on startup.           |
 
 ### Seeding data
 
@@ -84,17 +84,17 @@ Each file is imported only once per database. Completed imports are recorded in 
 
 ## Environment variables
 
-| Variable | Default | Description |
-|---|---|---|
-| `DYNAMODB_PORT` | `8000` | Port the API listens on inside the container. |
-| `DYNAMODB_HOSTNAME` | `0.0.0.0` | Interface the API binds to. |
-| `MONGO_URI` | `mongodb://localhost:27017` | MongoDB connection string. |
-| `MONGO_DB` | `local` | MongoDB database that holds the tables. |
+| Variable            | Default                     | Description                                   |
+| ------------------- | --------------------------- | --------------------------------------------- |
+| `DYNAMODB_PORT`     | `8000`                      | Port the API listens on inside the container. |
+| `DYNAMODB_HOSTNAME` | `0.0.0.0`                   | Interface the API binds to.                   |
+| `MONGO_URI`         | `mongodb://localhost:27017` | MongoDB connection string.                    |
+| `MONGO_DB`          | `local`                     | MongoDB database that holds the tables.       |
 
 ## Tags
 
 - `latest`: the most recent release
-- `1.0.0`: a specific version
+- `1.0.1`: a specific version (use this or newer; `1.0.0` re-imports seed data on restart)
 
 Images are built for `linux/amd64`. They are based on `mongo:8.0` with Node.js 24.
 
