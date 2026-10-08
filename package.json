@@ -2,8 +2,8 @@
   "name": "bsdynamodb",
   "version": "1.0.2",
   "description": "",
-  "license": "ISC",
-  "author": "",
+  "license": "MIT",
+  "author": "Ivo Michalik",
   "type": "module",
   "main": "dist/main.js",
   "engines": {

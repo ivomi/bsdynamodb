@@ -104,3 +104,7 @@ npm run docker:push                      # requires: docker login -u imis
 ```
 
 After the PR is merged, tag the merge commit on `main` (`git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`).
+
+## License
+
+[MIT](LICENSE)
