@@ -101,3 +101,7 @@ Images are built for `linux/amd64`. They are based on `ubuntu:noble` with `mongo
 ## Not intended for production
 
 This image is meant for local development, CI and tests. It has no authentication, no IAM, no streams and no transactions, and it does not reproduce DynamoDB's capacity limits or pricing.
+
+## License
+
+The bsdynamodb code is released under the [MIT License](https://github.com/ivomi/bsdynamodb/blob/main/LICENSE). The image also contains third-party software, such as MongoDB, Node.js and Ubuntu packages, which keeps its own licenses.
